@@ -1,11 +1,14 @@
 import math
 import random
-from typing import overload
-
 import numpy as np
-from matplotlib import patches
 
-from src.models.environment import Environment, SimEnvironment
+from typing import overload
+from matplotlib import patches
+from shapely import box
+from shapely.geometry import Point, Polygon
+from shapely.affinity import rotate, translate
+from src.models.scenario import Scenario, SimScenario
+from src.utils.tools import sector
 
 
 class Agent:
@@ -31,22 +34,43 @@ class SimAgent(Agent):
         self,
         field_of_view: float,
         distance: float,
-        env: Environment,
-        speed: float,
+        env: Scenario,
+        speed: float | tuple[float, float] | int = 1.0,
+        position: tuple[float, float] | None = None,
+        ori: float | None = None,
     ):
-        super().__init__((0, 0), 0, field_of_view, distance)
+        super().__init__(position, ori, field_of_view, distance)
+        if position is None or ori is None:
+            self._random_init(env)
+        if isinstance(speed, float) or isinstance(speed, int):
+            self.speed = (
+                speed * math.cos(self.heading),
+                speed * math.sin(self.heading),
+            )
+        else:
+            self.speed = speed
+        # 形成一个轮廓，扇形两边与坐标原点连接
+        sect = sector(
+            Point(*self.position),
+            self.heading - self.field_of_view / 2,
+            self.heading + self.field_of_view / 2,
+            self.distance,
+        )
+
+        # 保存扇形检测区域
+        self.sector: Polygon = sect
+
+    def __eq__(self, other):
+        return self.aid == other.aid
+
+    def _random_init(self, env: Scenario):
         road = random.choice(env.background.roads)
         pos = road.random_pos(env.background.width, env.background.height)
         self.position = pos
         ori = road.direction
-        # 如果在地图右半边，方向要反过来
         if random.random() > 0.5:
             ori += math.pi
         self.heading = ori
-        self.speed = (speed * math.cos(self.heading), speed * math.sin(self.heading))
-
-    def __eq__(self, other):
-        return self.aid == other.aid
 
     def move(self, dt=1):
         x, y = self.position
@@ -54,7 +78,7 @@ class SimAgent(Agent):
         self.position = (x + vx * dt, y + vy * dt)
 
     @overload
-    def within(self, point: tuple[float, float]):
+    def within(self, point: tuple):
         """
         Check if the given point is within the agent's field of view
         :param point:
@@ -71,65 +95,60 @@ class SimAgent(Agent):
         """
         pass
 
-    def within(self, arg: tuple[float, float] | Agent) -> bool:
-        if isinstance(arg, tuple):
-            x, y = arg
-            x0, y0 = self.position
-            dx, dy = x - x0, y - y0
-            if dx == 0 and dy == 0:
-                return True
-            if dx**2 + dy**2 > self.distance**2:
-                return False
-            angle = math.atan2(dy, dx)
-            # 保证角度在0到pi之间
-            if angle < 0:
-                angle += math.pi
-            # 如果目标在agent下方，角度要加pi
-            if dy < 0:
-                angle += math.pi
-            return abs(angle - self.heading) < self.field_of_view / 2
+    @overload
+    def within(self, box: np.ndarray):
+        """
+        Check if the given box is within the agent's field of view
+        :param box:
+        :return:
+        """
+        pass
+
+    def within(self, arg: Agent | np.ndarray | tuple) -> bool:
+        if isinstance(arg, np.ndarray):
+            if arg.shape == (2,):
+                x, y = arg
+                return self.sector.contains(Point(x, y))
+            x, y, w, h, theta = arg.T
+            rect = box(x - w / 2, y - h / 2, x + w / 2, y + h / 2)
+            rotated_rect = rotate(rect, theta, origin=(x, y), use_radians=True)
+            return self.sector.covers(rotated_rect)
         elif isinstance(arg, Agent):
             cav = arg
-            ego_x, ego_y = self.position
-            cav_x, cav_y = cav.position
-            dx, dy = cav_x - ego_x, cav_y - ego_y
-            if dx == 0 and dy == 0:
+            return self.sector.intersects(cav.sector)
+        elif isinstance(arg, tuple):
+            x, y = arg
+            if arg == self.position:
                 return True
-            dist = math.sqrt(dx**2 + dy**2)
-            if dist > self.distance + cav.distance:
-                return False
-            max_attempts = 50
-            for _ in range(max_attempts):
-                theta = random.uniform(
-                    self.heading - self.field_of_view / 2,
-                    self.heading + self.field_of_view / 2,
-                )
-                dist = random.uniform(0, self.distance)
-                x = ego_x + dist * math.cos(theta)
-                y = ego_y + dist * math.sin(theta)
-                if cav.within((x, y)):
-                    return True
-            return False
+            return self.sector.contains(Point(x, y))
+        else:
+            raise ValueError(f"Invalid argument type: {type(arg)}")
 
-    def predict(self, env: SimEnvironment, noise_pos=0.1, noise_shape=0.1):
+    def predict(
+        self, env: SimScenario, noise_pos=0.1, noise_shape=0.1, noise_heading=0.1
+    ):
         """
         Detect the agents in the environment
+        :param noise_shape:
+        :param noise_pos:
         :param env:
         :return:
         """
-        detected = []  # object box(xc, yc, w, h)
+        detected = []  # object box(xc, yc, w, h, theta)
         detected_ids = []
         object_shapes = np.array([info.shape for info in env.obj_info])
+
         for obj_id, obj in env.objects.items():
-            if not self.within(tuple[float, float](obj[:2])):
+            if not self.within(obj):
                 continue
             obj = obj.copy()
             obj[:2] += np.random.randn(2) * noise_pos
-            close_idx = np.isclose(obj[2:], object_shapes).all(axis=1)
+            close_idx = np.isclose(obj[2:-1], object_shapes).all(axis=1)
             if not close_idx.any():
                 continue
             shape = object_shapes[close_idx][0]
-            obj[2:] = shape + np.random.randn(2) * noise_shape
+            obj[2:-1] = shape + np.random.randn(2) * noise_shape
+            obj[-1] += np.random.randn() * noise_heading * math.pi
             detected.append(obj)
             detected_ids.append(obj_id)
         if not detected:
@@ -141,7 +160,7 @@ class SimAgent(Agent):
         # 添加类别概率分布
         for i, object_shape in enumerate(object_shapes):
             close_idxs = np.isclose(
-                preds[:, 2:], object_shape, atol=noise_shape * 10
+                preds[:, 2:-1], object_shape, atol=noise_shape * 10
             ).all(axis=1)
             probs[close_idxs, i] = np.random.uniform(0.7, 1, size=close_idxs.sum())
         for prob in probs:
@@ -151,7 +170,7 @@ class SimAgent(Agent):
                 w /= w.sum()
                 prob[prob == 0] = w * no_assign_prob
         cls = probs.argmax(axis=1)
-        # 添加协同检测(x, y, w, h, cls, prob)
+        # 添加协同检测(x, y, w, h, theta, cls, prob)
         return np.hstack((pred_ids[:, np.newaxis], preds, cls[:, np.newaxis], probs))
 
     def visualize(self, ax):

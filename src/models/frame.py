@@ -1,17 +1,36 @@
 import collections
 from copy import deepcopy
 from typing import List, overload
+import numpy as np
 
 import matplotlib.pyplot as plt
 from scipy.spatial.distance import cdist
 
 from src.models.agent import Agent
-from src.models.environment import Environment
+from src.models.scenario import Scenario
 from src.utils.tools import compute_joint_dist
 
 
+def get_ground_truth(ego: Agent, cav: Agent, env: Scenario):
+    return sum(
+        1 for _, obj in env.objects.items() if ego.within(obj) and cav.within(obj)
+    )
+
+
+def filter_preds(preds: np.ndarray, ego: Agent, cav: Agent):
+    subset = preds[:, 1:3]
+
+    # 创建一个布尔数组表示每个预测是否在 ego 和 cav 的范围内
+    within_ego = np.apply_along_axis(ego.within, 1, subset)
+    within_cav = np.apply_along_axis(cav.within, 1, subset)
+
+    # 使用布尔数组进行索引
+    indices = np.where(within_ego & within_cav)
+    return preds[indices]
+
+
 class Frame:
-    def __init__(self, env: Environment, agents: List[Agent]):
+    def __init__(self, env: Scenario, agents: List[Agent]):
         self.env = env
         self.agents = agents
 
@@ -42,7 +61,7 @@ class Frame:
         # 显示图形
         plt.show()
 
-    def predict(self, fuse_method, noisy_setting=None, threshold=0.5) -> dict:
+    def predict(self, fuse_method, noisy_setting=None, threshold=0.6) -> dict:
         """
         :param fuse_method: object fusion method
         :param noisy_setting: object detection noise setting, including position noise, shape noise.
@@ -61,6 +80,7 @@ class Frame:
             predict_results[f"ego{ego.aid}"] = ego_predict_results
         return predict_results
 
+    # TODO: 使用矩阵并行化计算
     def ego_predict(
         self,
         ego_agent: Agent,
@@ -81,27 +101,29 @@ class Frame:
         for cav in cav_agents:
             if not ego_agent.within(cav):
                 continue
+            ground_truth = get_ground_truth(ego_agent, cav, self.env)
+            if ground_truth == 0:
+                continue
             cav_preds = cav.predict(self.env, **noisy_setting)
             if cav_preds is None:
                 continue
+            ego_preds = filter_preds(ego_preds, ego_agent, cav)
+            cav_preds = filter_preds(cav_preds, ego_agent, cav)
             # Logic to fuse the predictions
-            dist_mat = cdist(ego_preds, cav_preds, metric=compute_joint_dist)
-            ego_ids, cav_ids = fuse_method(dist_mat, maximize=True)
-            bools = dist_mat[ego_ids, cav_ids] > threshold
-            ego_ids = ego_ids[bools]
-            cav_ids = cav_ids[bools]
-            correct_preds, false_preds = 0, 0
-            for ego_id, cav_id in zip(ego_ids, cav_ids):
-                ego_pred = ego_preds[ego_id]
-                cav_pred = cav_preds[cav_id]
-                # preds[0] is id
-                if ego_pred[0] == cav_pred[0]:
-                    correct_preds += 1
-                else:
-                    false_preds += 1
+            ego_ids, cav_ids = fuse_method(ego_preds, cav_preds)
+
+            # Note: Assume ego_preds and cav_preds are 2D numpy arrays, and id is at column 0.
+            TP = int(np.sum(ego_preds[ego_ids][:, 0] == cav_preds[cav_ids][:, 0]))
+            FP = len(ego_ids) - TP
+            FN = ground_truth - TP
+
             predict_results[f"cav{cav.aid}"] = {
-                "correct_preds": correct_preds,
-                "false_preds": false_preds,
+                "accuracy": TP / (TP + FP + FN) if TP + FP + FN > 0 else 0,
+                "precision": TP / (TP + FP) if TP + FP > 0 else 0,
+                "recall": TP / (TP + FN) if TP + FN > 0 else 0,
+                "correct_preds": TP,
+                "false_preds": FP,
+                "ground_truth": ground_truth,
                 "ego_preds": len(ego_preds),
                 "cav_preds": len(cav_preds),
             }

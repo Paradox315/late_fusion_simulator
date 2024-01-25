@@ -7,10 +7,12 @@ from typing import List, overload
 import matplotlib.pyplot as plt
 import numpy as np
 
+from src.utils.tools import center_to_coord
+
 ObjectInfo = collections.namedtuple("ObjectInfo", ["name", "num", "shape"])
 
 
-class Environment(ABC):
+class Scenario(ABC):
     def __init__(self):
         self.background = None
         self.objects = {}
@@ -24,20 +26,40 @@ class Environment(ABC):
         pass
 
 
-class SimEnvironment(Environment):
+class SimScenario(Scenario):
     def __init__(
-        self, width: int, height: int, roads_num: int, obj_info: List[ObjectInfo]
+        self,
+        width: int,
+        height: int,
+        obj_info: List[ObjectInfo],
+        roads_num: int = 0,
+        roads=None,
     ):
+        """
+        :param width: the width of the background(can't be empty)
+        :param height: the height of the background(can't be empty)
+        :param obj_info: the information of the objects(can't be empty)
+        :param roads_num: the number of the roads(default 0, set the roads_num to 0 if you don't want to generate roads)
+        :param roads: the roads(can't be empty if roads_num is 0)
+        """
         super().__init__()
         self.width = width
         self.height = height
-        self.roads_num = roads_num
         self.obj_info = obj_info
+        self.roads_num = roads_num
+        self.roads = roads
+        if roads_num == 0 and roads is None:
+            raise ValueError("roads_num and roads can't be both empty")
 
     def generate_background(self):
-        if self.background is None:
-            self.background = Background(self.width, self.height)
-            self.background.generate(self.roads_num)
+        """
+        Generate the background
+        :return:
+        """
+        if self.background:
+            return
+        self.background = Background(self.width, self.height, self.roads)
+        self.background.generate(self.roads_num)
 
     def generate_objects(self):
         """
@@ -46,38 +68,40 @@ class SimEnvironment(Environment):
         """
         id = 1
         for info in self.obj_info:
+            object_generator = self._generate_object(info.shape)
             for _ in range(info.num):
-                obj = self._generate_object(info.shape)
-                self.objects[id] = obj
-                id += 1
+                for obj in object_generator:
+                    if not self.background.within_road(obj):
+                        self.objects[id] = obj
+                        id += 1
+                        break
 
     def _generate_object(self, shape: tuple[float, float]) -> np.ndarray:
         """
         Generate a object with given shape
         :param shape: (w,h)
-        :return: object box (xc, yc, w, h)
+        :return: object box (xc, yc, w, h, theta)
         """
         w, h = shape
-        xc, yc = random.uniform(w / 2, self.width - w / 2), random.uniform(
-            h / 2, self.height - h / 2
-        )
-        box = np.array((xc, yc, w, h))
-        while self.background.within_road(box):
-            xc, yc = random.uniform(w / 2, self.width - w / 2), random.uniform(
-                h / 2, self.height - h / 2
-            )
-            box = np.array((xc, yc, w, h))
-        return box
+        max_size = math.dist((0, 0), (w, h))
+        while True:
+            xc, yc = random.uniform(
+                max_size / 2, self.width - max_size / 2
+            ), random.uniform(max_size / 2, self.height - max_size / 2)
+            theta = random.uniform(0, math.pi)
+            box = np.array((xc, yc, w, h, theta))
+            yield box
 
     def visualize(self, ax):
         self.background.visualize(ax)
         for obj in self.objects.values():
-            x, y, w, h = obj
+            x, y, w, h, theta = obj
             ax.add_patch(
                 plt.Rectangle(
                     (x - w / 2, y - h / 2),
                     w,
                     h,
+                    theta * 180 / math.pi,
                     linewidth=1,
                     edgecolor="b",
                     facecolor="none",
@@ -86,10 +110,10 @@ class SimEnvironment(Environment):
 
 
 class Background:
-    def __init__(self, width: int, height: int):
+    def __init__(self, width: int, height: int, roads=None):
         self.height = height
         self.width = width
-        self.roads = []
+        self.roads = roads if roads is not None else []
 
     def generate(self, roads_num: int):
         for i in range(roads_num):
@@ -112,24 +136,16 @@ class Background:
     def within_road(self, arg: tuple[float, float] | np.ndarray) -> bool:
         """
         Check if the given point or box is on the road
-        :param arg: (x,y) or (xc,yc,w,h)
+        :param arg: (x, y) or (xc, yc, w, h, theta)
         :return:
         """
         if isinstance(arg, tuple):
             assert 0 <= arg[0] <= self.width and 0 <= arg[1] <= self.height
             return any(road.within(arg) for road in self.roads)
         elif isinstance(arg, np.ndarray):
-            assert arg.shape == (4,)
-            xc, yc, w, h = arg
-            assert 0 <= xc <= self.width and 0 <= yc <= self.height
-            delta_loc = [
-                (-w / 2, -h / 2),
-                (-w / 2, h / 2),
-                (w / 2, -h / 2),
-                (w / 2, h / 2),
-            ]
-            loc = [(xc + x, yc + y) for x, y in delta_loc]
-            return any(self.within_road(point) for point in loc)
+            assert arg.shape == (5,)
+            loc = center_to_coord(arg)
+            return any(self.within_road((x, y)) for x, y in loc)
         else:
             raise TypeError("arg must be tuple[float, float] or np.ndarray")
 
@@ -166,12 +182,16 @@ class Road:
         )
 
     def random_pos(self, w, h):
-        x = random.uniform(0, w)
-        y = random.uniform(0, h)
-        while not self.within((x, y)):
-            x = random.uniform(0, w)
-            y = random.uniform(0, h)
-        return x, y
+        def position_generator(w, h):
+            while True:
+                x = random.uniform(0, w)
+                y = random.uniform(0, h)
+                if self.within((x, y)):
+                    yield x, y
+
+        for position in position_generator(w, h):
+            if self.within(position):
+                return position
 
     def visualize(self, ax, width, height):
         x0, y0 = self.start_point
@@ -194,7 +214,7 @@ class Road:
         )
 
 
-class RealEnvironment(Environment):
+class RealScenario(Scenario):
     def generate_background(self):
         # Logic to generate the background based on reconstructed data
         pass

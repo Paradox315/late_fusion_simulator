@@ -2,13 +2,13 @@ import math
 import unittest
 
 from src.models.agent import SimAgent
-from src.models.environment import SimEnvironment, ObjectInfo, Road
+from src.models.scenario import SimScenario, ObjectInfo, Road
 from src.models.frame import Frame
 
 
 class FrameTestCase(unittest.TestCase):
     def test_init(self):
-        env = SimEnvironment(
+        env = SimScenario(
             100,
             100,
             1,
@@ -28,7 +28,7 @@ class FrameTestCase(unittest.TestCase):
             frame = next(frame)
 
     def test_visualize(self):
-        env = SimEnvironment(
+        env = SimScenario(
             100,
             100,
             1,

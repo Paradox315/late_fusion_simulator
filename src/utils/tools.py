@@ -1,7 +1,40 @@
+import math
 import time
 from functools import wraps
 
 import numpy as np
+from scipy.spatial.distance import cdist
+from shapely import Polygon
+from shapely.affinity import rotate
+
+
+def sector(center, start_angle, end_angle, radius, steps=200):
+    def polar_point(origin_point, angle, distance):
+        return [
+            origin_point.x + math.sin(angle) * distance,
+            origin_point.y + math.cos(angle) * distance,
+        ]
+
+    if start_angle > end_angle:
+        start_angle = start_angle - 2 * math.pi
+    else:
+        pass
+    step_angle_width = (end_angle - start_angle) / steps
+    sector_width = end_angle - start_angle
+    segment_vertices = []
+    start_angle = math.pi / 2 - end_angle
+    end_angle = math.pi / 2 - start_angle
+
+    segment_vertices.append(polar_point(center, 0, 0))
+    segment_vertices.append(polar_point(center, start_angle, radius))
+
+    for z in range(1, steps):
+        segment_vertices.append(
+            (polar_point(center, start_angle + z * step_angle_width, radius))
+        )
+    segment_vertices.append(polar_point(center, start_angle + sector_width, radius))
+    segment_vertices.append(polar_point(center, 0, 0))
+    return Polygon(segment_vertices)
 
 
 def centers_to_boxes(centers: np.ndarray):
@@ -9,7 +42,7 @@ def centers_to_boxes(centers: np.ndarray):
     将中心表示法转换为框表示法
 
     参数:
-    - centers: 中心表示法，表示为一个四元组(xc, yc, w, h)
+    - centers: 中心表示法，表示为一个四元组(xc, yc, w, h, theta)
 
     返回值:
     - boxes: 框表示法，表示为一个四元组(x_min, y_min, x_max, y_max)
@@ -46,6 +79,21 @@ def diff_boxes(boxes: np.ndarray, sub_boxes: np.ndarray):
     )
 
 
+def center_to_coord(centers: np.ndarray):
+    """
+    :param centers: (x_center, y_center, width, height, theta)
+    :return: the coordinates of the four corners of the rectangle
+    """
+    assert centers.shape == (5,)
+    x, y, w, h, theta = centers
+    from shapely.geometry import box
+    from shapely.affinity import rotate
+
+    rect = box(x - w / 2, y - h / 2, x + w / 2, y + h / 2)
+    rotated_rect = rotate(rect, theta, origin=(x, y), use_radians=True)
+    return np.array(rotated_rect.exterior.coords.xy).T[:-1]
+
+
 def func_timer(unit="ms"):
     def decorator(func):
         func.is_first_call = True
@@ -78,25 +126,39 @@ def func_timer(unit="ms"):
 
 def compute_iou(boxes1, boxes2):
     """
-    box1:(x_center, y_center, width, height)
-    box2:(x_center, y_center, width, height)
+    box1:(x_center, y_center, width, height, theta)
+    box2:(x_center, y_center, width, height, theta)
     """
     # 计算两个检测框的交集
-    x1c, y1c, w1, h1 = boxes1
-    x2c, y2c, w2, h2 = boxes2
-    x1 = x1c - w1 / 2
-    y1 = y1c - h1 / 2
-    x2 = x2c - w2 / 2
-    y2 = y2c - h2 / 2
-    x1 = max(x1, x2)
-    y1 = max(y1, y2)
-    x2 = min(x1c + w1 / 2, x2c + w2 / 2)
-    y2 = min(y1c + h1 / 2, y2c + h2 / 2)
-    intersection = max(0, x2 - x1) * max(0, y2 - y1)
-    union = w1 * h1 + w2 * h2 - intersection
-    iou = intersection / union
+    x1c, y1c, w1, h1, theta1 = boxes1
+    x2c, y2c, w2, h2, theta2 = boxes2
+    from shapely.geometry import Polygon  # 多边形
 
-    return iou
+    poly1 = Polygon(
+        [
+            (x1c - w1 / 2, y1c - h1 / 2),
+            (x1c - w1 / 2, y1c + h1 / 2),
+            (x1c + w1 / 2, y1c + h1 / 2),
+            (x1c + w1 / 2, y1c - h1 / 2),
+        ]
+    )
+    poly1 = rotate(poly1, theta1, origin=(x1c, y1c), use_radians=True)
+    poly2 = Polygon(
+        [
+            (x2c - w2 / 2, y2c - h2 / 2),
+            (x2c - w2 / 2, y2c + h2 / 2),
+            (x2c + w2 / 2, y2c + h2 / 2),
+            (x2c + w2 / 2, y2c - h2 / 2),
+        ]
+    )
+    poly2 = rotate(poly2, theta2, origin=(x2c, y2c), use_radians=True)
+    if not poly1.intersects(poly2):
+        return 0
+    else:
+        inter_area = poly1.intersection(poly2).area
+        union_area = poly1.area + poly2.area - inter_area
+        iou = inter_area / union_area
+        return iou
 
 
 def compute_helling(probs1, probs2):
@@ -111,13 +173,27 @@ def compute_helling(probs1, probs2):
 
 def compute_joint_dist(preds1, preds2):
     """
-    preds1: (id, x_center, y_center, width, height, cls, probs)
-    preds2: (id, x_center, y_center, width, height, cls, probs)
+    :param preds1: preds1:(x_center, y_center, width, height, theta, class_probs, attr_probs)
+    :param preds2: preds2:(x_center, y_center, width, height, theta, class_probs, attr_probs)
+    :return:
     """
     # 计算两个检测框的IoU
-    iou = compute_iou(preds1[1:5], preds2[1:5])
+    iou = compute_iou(preds1[1:6], preds2[1:6])
     # 计算两个检测框的属性信息的Hellinger距离
-    helling = compute_helling(preds1[6:], preds2[6:])
+    helling = compute_helling(preds1[7:], preds2[7:])
     # 计算联合距离
     joint_dist = 0.7 * iou + 0.3 * helling
     return joint_dist
+
+
+def node_affinity_fn(preds1, preds2):
+    """
+    :param preds1: preds1:(x_center, y_center, width, height, theta, class_probs, attr_probs)
+    :param preds2: preds2:(x_center, y_center, width, height, theta, class_probs, attr_probs)
+    :return:
+    """
+    if len(preds1.shape) == 3:
+        preds1 = preds1[0]
+        preds2 = preds2[0]
+    affinity_mat = cdist(preds1, preds2, metric=compute_joint_dist)
+    return np.expand_dims(affinity_mat, axis=0)

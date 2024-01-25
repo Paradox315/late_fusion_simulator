@@ -1,6 +1,6 @@
 import unittest
 
-from src.models.environment import *
+from src.models.scenario import *
 
 
 class RoadTestCase(unittest.TestCase):
@@ -58,7 +58,7 @@ class BackgroundTestCase(unittest.TestCase):
 
 class EnvironmentTestCase(unittest.TestCase):
     def test_Environment1(self):
-        env = SimEnvironment(
+        env = SimScenario(
             100,
             100,
             1,
