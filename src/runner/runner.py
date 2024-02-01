@@ -1,3 +1,8 @@
+from typing import Callable, Dict, Tuple
+
+import numpy as np
+import torch
+
 from src.models.frame import Frame
 import json as js
 
@@ -13,7 +18,12 @@ class Simulator:
             self.frames.append(next_frame)
         self.results = {}
 
-    def run(self, fuse_method, visualize=False, noise_setting=None):
+    def run(
+        self,
+        fuse_method: Callable[[np.ndarray, np.ndarray], Tuple],
+        visualize=False,
+        noise_setting=None,
+    ):
         self.results = {}
         for frame in self.frames:
             if visualize:

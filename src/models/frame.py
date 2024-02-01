@@ -1,23 +1,23 @@
-import collections
 from copy import deepcopy
-from typing import List, overload
-import numpy as np
+from typing import List, Tuple, Callable, Dict
 
 import matplotlib.pyplot as plt
-from scipy.spatial.distance import cdist
+import numpy as np
+import torch
 
-from src.models.agent import Agent
-from src.models.scenario import Scenario
-from src.utils.tools import compute_joint_dist
+from src.models.agent import Agent, SimAgent
+from src.models.scenario import Scenario, SimScenario
 
 
-def get_ground_truth(ego: Agent, cav: Agent, env: Scenario):
+def get_ground_truth(ego: Agent | SimAgent, cav: Agent | SimAgent, env: Scenario):
     return sum(
         1 for _, obj in env.objects.items() if ego.within(obj) and cav.within(obj)
     )
 
 
-def filter_preds(preds: np.ndarray, ego: Agent, cav: Agent):
+def filter_preds(
+    preds: np.ndarray, ego: Agent | SimAgent, cav: Agent | SimAgent
+) -> np.ndarray:
     subset = preds[:, 1:3]
 
     # 创建一个布尔数组表示每个预测是否在 ego 和 cav 的范围内
@@ -30,7 +30,7 @@ def filter_preds(preds: np.ndarray, ego: Agent, cav: Agent):
 
 
 class Frame:
-    def __init__(self, env: Scenario, agents: List[Agent]):
+    def __init__(self, env: Scenario | SimScenario, agents: List[Agent | SimAgent]):
         self.env = env
         self.agents = agents
 
@@ -61,7 +61,12 @@ class Frame:
         # 显示图形
         plt.show()
 
-    def predict(self, fuse_method, noisy_setting=None, threshold=0.6) -> dict:
+    def predict(
+        self,
+        fuse_method: Callable[[np.ndarray, np.ndarray], Tuple],
+        noisy_setting=None,
+        threshold=0.6,
+    ) -> Dict[str, Dict]:
         """
         :param fuse_method: object fusion method
         :param noisy_setting: object detection noise setting, including position noise, shape noise.
@@ -75,7 +80,7 @@ class Frame:
         for ego in self.agents:
             cav_agents = [agent for agent in self.agents if agent != ego]
             ego_predict_results = self.ego_predict(
-                ego, cav_agents, fuse_method, noisy_setting, threshold
+                ego, cav_agents, fuse_method, noisy_setting
             )
             predict_results[f"ego{ego.aid}"] = ego_predict_results
         return predict_results
@@ -83,11 +88,10 @@ class Frame:
     # TODO: 使用矩阵并行化计算
     def ego_predict(
         self,
-        ego_agent: Agent,
-        cav_agents: List[Agent],
-        fuse_method,
+        ego_agent: Agent | SimAgent,
+        cav_agents: List[Agent | SimAgent],
+        fuse_method: Callable[[np.ndarray, np.ndarray], Tuple],
         noisy_setting=None,
-        threshold=0.5,
     ):
         if noisy_setting is None:
             noisy_setting = {}

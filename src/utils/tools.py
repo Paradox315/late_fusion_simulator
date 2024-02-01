@@ -1,8 +1,9 @@
 import math
 import time
 from functools import wraps
-
+import pygmtools as pygm
 import numpy as np
+import torch
 from scipy.spatial.distance import cdist
 from shapely import Polygon
 from shapely.affinity import rotate
@@ -35,48 +36,6 @@ def sector(center, start_angle, end_angle, radius, steps=200):
     segment_vertices.append(polar_point(center, start_angle + sector_width, radius))
     segment_vertices.append(polar_point(center, 0, 0))
     return Polygon(segment_vertices)
-
-
-def centers_to_boxes(centers: np.ndarray):
-    """
-    将中心表示法转换为框表示法
-
-    参数:
-    - centers: 中心表示法，表示为一个四元组(xc, yc, w, h, theta)
-
-    返回值:
-    - boxes: 框表示法，表示为一个四元组(x_min, y_min, x_max, y_max)
-    """
-    boxes = np.zeros_like(centers)
-    boxes[:, 0] = centers[:, 0] - centers[:, 2] / 2
-    boxes[:, 1] = centers[:, 1] - centers[:, 3] / 2
-    boxes[:, 2] = centers[:, 0] + centers[:, 2] / 2
-    boxes[:, 3] = centers[:, 1] + centers[:, 3] / 2
-    return boxes
-
-
-def boxes_to_centers(boxes: np.array):
-    """
-    将框表示法转换为中心表示法
-
-    参数:
-    - boxes: 框表示法，表示为一个四元组(x_min, y_min, x_max, y_max)
-
-    返回值:
-    - centers: 中心表示法，表示为一个四元组(xc, yc, w, h)
-    """
-    centers = np.zeros_like(boxes)
-    centers[:, 0] = (boxes[:, 0] + boxes[:, 2]) / 2
-    centers[:, 1] = (boxes[:, 1] + boxes[:, 3]) / 2
-    centers[:, 2] = boxes[:, 2] - boxes[:, 0]
-    centers[:, 3] = boxes[:, 3] - boxes[:, 1]
-    return centers
-
-
-def diff_boxes(boxes: np.ndarray, sub_boxes: np.ndarray):
-    return np.array(
-        [row for row in boxes if not any(np.isclose(row, sub_boxes).all(axis=1))]
-    )
 
 
 def center_to_coord(centers: np.ndarray):
@@ -154,11 +113,10 @@ def compute_iou(boxes1, boxes2):
     poly2 = rotate(poly2, theta2, origin=(x2c, y2c), use_radians=True)
     if not poly1.intersects(poly2):
         return 0
-    else:
-        inter_area = poly1.intersection(poly2).area
-        union_area = poly1.area + poly2.area - inter_area
-        iou = inter_area / union_area
-        return iou
+    inter_area = poly1.intersection(poly2).area
+    union_area = poly1.area + poly2.area - inter_area
+    iou = inter_area / union_area
+    return iou
 
 
 def compute_helling(probs1, probs2):
@@ -173,8 +131,8 @@ def compute_helling(probs1, probs2):
 
 def compute_joint_dist(preds1, preds2):
     """
-    :param preds1: preds1:(x_center, y_center, width, height, theta, class_probs, attr_probs)
-    :param preds2: preds2:(x_center, y_center, width, height, theta, class_probs, attr_probs)
+    :param preds1: (id, x_center, y_center, width, height, theta, cls, attr_probs)
+    :param preds2: (id, x_center, y_center, width, height, theta, cls, attr_probs)
     :return:
     """
     # 计算两个检测框的IoU
@@ -186,14 +144,84 @@ def compute_joint_dist(preds1, preds2):
     return joint_dist
 
 
-def node_affinity_fn(preds1, preds2):
+def build_graph(preds: torch.Tensor):
     """
-    :param preds1: preds1:(x_center, y_center, width, height, theta, class_probs, attr_probs)
-    :param preds2: preds2:(x_center, y_center, width, height, theta, class_probs, attr_probs)
+    :param preds: (id, x_center, y_center, width, height, theta, cls, attr_probs)
+    :return: graph: shape(n,n): the graph of agents
+    """
+    points = preds[:, 1:3]
+    cls = preds[:, 6]
+    angles = preds[:, 5]
+    dist_mat = torch.cdist(points, points, p=2)
+    theta_mat = torch.abs(angles.unsqueeze(1) - angles.unsqueeze(0))
+    cls_from = cls.unsqueeze(1).repeat(1, cls.shape[0])
+    cls_to = cls.unsqueeze(0).repeat(cls.shape[0], 1)
+    return torch.stack([dist_mat, theta_mat, cls_from, cls_to], dim=-1)
+
+
+def build_conn_edge(graph: torch.Tensor):
+    """
+    :param graph: shape(n,n,features_len): the graph of agents
+    :return: conn: shape(m,2): the connection matrix of agents
+             edge: shape(m,2,features_len): the edge matrix of agents
+    """
+    from_, to_ = torch.where(graph[:, :, 0] != 0)
+    conn = torch.stack([from_, to_], dim=0).t()
+    edge = graph[conn[:, 0], conn[:, 1]]
+    return conn, edge
+
+
+def node_affinity_fn(
+    preds1: torch.Tensor, preds2: torch.Tensor, lamda1=0.5, lamda2=0.1
+):
+    """
+    :param preds1: preds1:(id, x_center, y_center, width, height, theta, cls, attr_probs)
+    :param preds2: preds2:(id, x_center, y_center, width, height, theta, cls, attr_probs)
     :return:
     """
     if len(preds1.shape) == 3:
         preds1 = preds1[0]
         preds2 = preds2[0]
-    affinity_mat = cdist(preds1, preds2, metric=compute_joint_dist)
-    return np.expand_dims(affinity_mat, axis=0)
+    cls1, cls2 = preds1[:, 6].bool(), preds2[:, 6].bool()
+    shape1, shape2 = preds1[:, 3:5], preds2[:, 3:5]
+    pos1, pos2 = preds1[:, 1:3], preds2[:, 1:3]
+    conf1, conf2 = preds1[:, 7:], preds2[:, 7:]
+    # check if the two nodes are of the same class
+    affinity1 = cls1.view(-1, 1) == cls2.view(1, -1)
+    # calculate the shape affinity
+    affinity2 = torch.exp(-lamda1 * torch.cdist(shape1, shape2, p=2))
+    # calculate the position affinity
+    affinity3 = torch.exp(-lamda2 * torch.cdist(pos1, pos2, p=2))
+    # calculate the confidence affinity
+    affinity4 = torch.sum(torch.sqrt(conf1.unsqueeze(1) * conf2.unsqueeze(0)), dim=-1)
+    # calculate the joint affinity
+    mu1, mu2 = 0.5, 0.5
+    affinity = affinity1 * affinity4 * (mu1 * affinity2 + mu2 * affinity3)
+    return affinity[None]
+
+
+def edge_affinity_fn(edges1, edges2, lamda1=0.5, lamda2=0.1):
+    if len(edges1.shape) == 3:
+        edges1 = edges1[0]
+        edges2 = edges2[0]
+    cls_edge1, cls_edge2 = edges1[:, 2:].int(), edges2[:, 2:].int()
+    dist1, dist2 = edges1[:, 0], edges2[:, 0]
+    angle1, angle2 = edges1[:, 1], edges2[:, 1]
+
+    # check if the two edges are of the same class
+    def compare_tensors(tensor1, tensor2):
+        tensor1_exp = tensor1.unsqueeze(1).expand(-1, tensor2.size(0), -1)
+        tensor2_exp = tensor2.unsqueeze(0).expand(tensor1.size(0), -1, -1)
+        return torch.eq(tensor1_exp, tensor2_exp).all(dim=-1)
+
+    affinity1 = compare_tensors(cls_edge1, cls_edge2)
+    # calculate the distance affinity
+    affinity2 = torch.exp(-lamda1 * (dist1.view(-1, 1) - dist2.view(1, -1)) ** 2)
+    # calculate the angle affinity
+    affinity3 = torch.exp(
+        -lamda2
+        * torch.abs(torch.sin(angle1.view(-1, 1)) - torch.sin(angle2.view(1, -1)))
+    )
+    mu1, mu2 = 0.5, 0.5
+    affinity = affinity1 * (mu1 * affinity2 + mu2 * affinity3)
+    return affinity[None]

@@ -2,7 +2,9 @@ import math
 import random
 import numpy as np
 
-from typing import overload
+from typing import overload, Optional
+
+import torch
 from matplotlib import patches
 from shapely import box
 from shapely.geometry import Point, Polygon
@@ -125,8 +127,12 @@ class SimAgent(Agent):
             raise ValueError(f"Invalid argument type: {type(arg)}")
 
     def predict(
-        self, env: SimScenario, noise_pos=0.1, noise_shape=0.1, noise_heading=0.1
-    ):
+        self,
+        env: SimScenario | Scenario,
+        noise_pos=0.1,
+        noise_shape=0.1,
+        noise_heading=0.1,
+    ) -> Optional[np.ndarray]:
         """
         Detect the agents in the environment
         :param noise_shape:

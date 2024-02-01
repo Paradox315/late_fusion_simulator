@@ -1,6 +1,9 @@
 import math
 import random
+import time
+
 import numpy as np
+import torch
 from scipy.optimize import linear_sum_assignment
 from src.models.agent import SimAgent
 from src.models.scenario import SimScenario, ObjectInfo, Road
@@ -11,6 +14,7 @@ from src.utils.lap import auction_match, graph_based_match, hungarian_match
 
 random.seed(2023)
 np.random.seed(2023)
+_ = torch.manual_seed(2023)
 env = SimScenario(
     100,
     100,
@@ -36,18 +40,21 @@ agent3 = SimAgent(math.pi / 2, 50, env, 1)
 # agent3.speed = (1, 1)
 agent4 = SimAgent(math.pi / 2, 50, env, 1)
 frame = Frame(env, [agent1, agent2, agent3, agent4])
-simulator = Simulator(30, frame)
+simulator = Simulator(2, frame)
 noise_setting = [
     {"noise_pos": 0.01, "noise_shape": 0.01, "noise_heading": math.radians(0.01)},
-    {"noise_pos": 3, "noise_shape": 0.25, "noise_heading": math.radians(3)},
+    {"noise_pos": 1, "noise_shape": 0.1, "noise_heading": math.radians(3)},
     # {"noise_pos": 0.05, "noise_shape": 0.05, "noise_heading": 0.05},
     # {"noise_pos": 0.1, "noise_shape": 0.1, "noise_heading": 0.1},
     # {"noise_pos": 0.2, "noise_shape": 0.2, "noise_heading": 0.2},
 ]
 for i, noise in enumerate(noise_setting):
-    simulator.run(auction_match, visualize=False, noise_setting=noise)
+    start = time.perf_counter()
+    simulator.run(graph_based_match, visualize=False, noise_setting=noise)
+    end = time.perf_counter()
+    print(f"第{i+1}次仿真耗时{end-start}秒")
     simulator.save_simulation_results(
-        format="json", path=f"../data/auction_match{i}.json"
+        format="json", path=f"../data/graph_match_{i}.json"
     )
     # simulator.save_simulation_results(format="console")
 print("finished")
