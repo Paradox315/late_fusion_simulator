@@ -1,14 +1,13 @@
 import math
 import random
-import numpy as np
-
 from typing import overload, Optional
 
-import torch
+import numpy as np
 from matplotlib import patches
 from shapely import box
+from shapely.affinity import rotate
 from shapely.geometry import Point, Polygon
-from shapely.affinity import rotate, translate
+
 from src.models.scenario import Scenario, SimScenario
 from src.utils.tools import sector
 
@@ -23,6 +22,12 @@ class Agent:
         field_of_view: float,
         distance: float,
     ):
+        """
+        :param position: initial position
+        :param ori: move orientation
+        :param field_of_view: agent's field of view
+        :param distance: agent's detection distance
+        """
         Agent.count += 1
         self.aid = Agent.count
         self.position = position
@@ -38,8 +43,8 @@ class SimAgent(Agent):
         distance: float,
         env: Scenario,
         speed: float | tuple[float, float] | int = 1.0,
-        position: tuple[float, float] | None = None,
-        ori: float | None = None,
+        position: Optional[tuple[float, float]] = None,
+        ori: Optional[float] = None,
     ):
         super().__init__(position, ori, field_of_view, distance)
         if position is None or ori is None:
@@ -51,7 +56,7 @@ class SimAgent(Agent):
             )
         else:
             self.speed = speed
-        # 形成一个轮廓，扇形两边与坐标原点连接
+        # generate the agent's detection area
         sect = sector(
             Point(*self.position),
             self.heading - self.field_of_view / 2,
@@ -59,7 +64,7 @@ class SimAgent(Agent):
             self.distance,
         )
 
-        # 保存扇形检测区域
+        # set the agent's detection area
         self.sector: Polygon = sect
 
     def __eq__(self, other):
@@ -75,6 +80,10 @@ class SimAgent(Agent):
         self.heading = ori
 
     def move(self, dt=1):
+        """
+        :param dt: time delta
+        :return: agent's next position
+        """
         x, y = self.position
         vx, vy = self.speed
         self.position = (x + vx * dt, y + vy * dt)
@@ -135,9 +144,10 @@ class SimAgent(Agent):
     ) -> Optional[np.ndarray]:
         """
         Detect the agents in the environment
-        :param noise_shape:
-        :param noise_pos:
-        :param env:
+        :param noise_shape: shape noise
+        :param noise_pos: detection center noise
+        :param noise_heading: heading noise
+        :param env: agent's environment
         :return:
         """
         detected = []  # object box(xc, yc, w, h, theta)
