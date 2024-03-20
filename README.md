@@ -2,6 +2,25 @@
 
 后期融合环境的模拟器，用于测试后期融合算法的性能。
 
+# 环境配置
+
+## conda环境
+
+使用 conda 创建虚拟环境并通过 `requirements.txt` 安装依赖
+
+```bash
+conda create -n rrwn python=3.8
+conda activate rrwn
+pip install -r requirements.txt
+```
+
+## poetry环境
+
+使用poetry创建虚拟环境并安装依赖
+
+```bash
+poetry install
+```
 # 项目结构
 
 ```bash
@@ -37,10 +56,14 @@
 > - `requirements.txt`：项目依赖
 > - `src`：源代码
     >
+
 - `main.py`：主程序
->   - `models`：模拟器主要的模型
-      >
+
+> - `models`：模拟器主要的模型
+    >
+
 - `agent.py`：agent模型, 包括agent的参数和动作
+
 >     - `frame.py`：帧模型，包括帧的信息和帧的更新
 >     - `scenario.py`：场景模型，包括场景的背景信息和目标信息
 >   - `numpy_rrwn.py`：numpy实现的RRWN算法
