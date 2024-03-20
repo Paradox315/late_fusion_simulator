@@ -54,7 +54,7 @@ for i, noise in enumerate(noise_setting):
     end = time.perf_counter()
     print(f"第{i+1}次仿真耗时{end-start}秒")
     simulator.save_simulation_results(
-        format="json", path=f"../data/graph_match_3_{i}.json"
+        format="json", path=f"./data/graph_match_3_{i}.json"
     )
     # simulator.save_simulation_results(format="console")
 print("finished")
