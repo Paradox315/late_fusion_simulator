@@ -153,10 +153,22 @@ def build_graph(preds: torch.Tensor):
     cls = preds[:, 6]
     angles = preds[:, 5]
     dist_mat = torch.cdist(points, points, p=2)
+    # Expand dimensions
+    points_exp1 = points.unsqueeze(1).expand(-1, points.shape[0], -1)
+    points_exp2 = points.unsqueeze(0).expand(points.shape[0], -1, -1)
+
+    # Compute azimuth
+    azumith = torch.atan(
+        (points_exp2[..., 1] - points_exp1[..., 1])
+        / (points_exp2[..., 0] - points_exp1[..., 0])
+    )
+
+    # Handle division by zero
+    azumith[torch.isnan(azumith)] = 0
     theta_mat = torch.abs(angles.unsqueeze(1) - angles.unsqueeze(0))
     cls_from = cls.unsqueeze(1).repeat(1, cls.shape[0])
     cls_to = cls.unsqueeze(0).repeat(cls.shape[0], 1)
-    return torch.stack([dist_mat, theta_mat, cls_from, cls_to], dim=-1)
+    return torch.stack([dist_mat, azumith, theta_mat, cls_from, cls_to], dim=-1)
 
 
 def build_conn_edge(graph: torch.Tensor):
@@ -173,55 +185,76 @@ def build_conn_edge(graph: torch.Tensor):
 
 def node_affinity_fn(
     preds1: torch.Tensor, preds2: torch.Tensor, lamda1=0.5, lamda2=0.1
-):
+) -> torch.Tensor:
     """
-    :param preds1: preds1:(id, x_center, y_center, width, height, theta, cls, attr_probs)
-    :param preds2: preds2:(id, x_center, y_center, width, height, theta, cls, attr_probs)
-    :return:
+    :param preds1: (batch_size, id, x_center, y_center, width, height, heading, cls, attr_probs)
+    :param preds2: (batch_size, id, x_center, y_center, width, height, heading, cls, attr_probs)
+    :param lamda1: the weight of shape affinity
+    :param lamda2: the weight of position affinity
+    :return: affinities: shape(batch_size,n,n): the affinity matrix of agents
     """
-    if len(preds1.shape) == 3:
-        preds1 = preds1[0]
-        preds2 = preds2[0]
-    cls1, cls2 = preds1[:, 6].bool(), preds2[:, 6].bool()
-    shape1, shape2 = preds1[:, 3:5], preds2[:, 3:5]
-    pos1, pos2 = preds1[:, 1:3], preds2[:, 1:3]
-    conf1, conf2 = preds1[:, 7:], preds2[:, 7:]
-    # check if the two nodes are of the same class
-    affinity1 = cls1.view(-1, 1) == cls2.view(1, -1)
-    # calculate the shape affinity
-    affinity2 = torch.exp(-lamda1 * torch.cdist(shape1, shape2, p=2))
-    # calculate the position affinity
-    affinity3 = torch.exp(-lamda2 * torch.cdist(pos1, pos2, p=2))
-    # calculate the confidence affinity
-    affinity4 = torch.sum(torch.sqrt(conf1.unsqueeze(1) * conf2.unsqueeze(0)), dim=-1)
-    # calculate the joint affinity
-    mu1, mu2 = 0.5, 0.5
-    affinity = affinity1 * affinity4 * (mu1 * affinity2 + mu2 * affinity3)
-    return affinity[None]
 
+    def _node_affinity_fn(preds1: torch.Tensor, preds2: torch.Tensor) -> torch.Tensor:
+        cls1, cls2 = preds1[:, 6].bool(), preds2[:, 6].bool()
+        shape1, shape2 = preds1[:, 3:5], preds2[:, 3:5]
+        pos1, pos2 = preds1[:, 1:3], preds2[:, 1:3]
+        conf1, conf2 = preds1[:, 7:], preds2[:, 7:]
+        # check if the two nodes are of the same class
+        affinity1 = cls1.view(-1, 1) == cls2.view(1, -1)
+        # calculate the shape affinity
+        affinity2 = torch.exp(-lamda1 * torch.cdist(shape1, shape2, p=2))
+        # calculate the position affinity
+        affinity3 = torch.exp(-lamda2 * torch.cdist(pos1, pos2, p=2))
+        # calculate the confidence affinity
+        affinity4 = torch.sum(
+            torch.sqrt(conf1.unsqueeze(1) * conf2.unsqueeze(0)), dim=-1
+        )
+        # calculate the joint affinity
+        mu1, mu2 = 0.5, 0.5
+        affinity = affinity1 * affinity4 * (mu1 * affinity2 + mu2 * affinity3)
+        return affinity
 
-def edge_affinity_fn(edges1, edges2, lamda1=0.5, lamda2=0.1):
-    if len(edges1.shape) == 3:
-        edges1 = edges1[0]
-        edges2 = edges2[0]
-    cls_edge1, cls_edge2 = edges1[:, 2:].int(), edges2[:, 2:].int()
-    dist1, dist2 = edges1[:, 0], edges2[:, 0]
-    angle1, angle2 = edges1[:, 1], edges2[:, 1]
-
-    # check if the two edges are of the same class
-    def compare_tensors(tensor1, tensor2):
-        tensor1_exp = tensor1.unsqueeze(1).expand(-1, tensor2.size(0), -1)
-        tensor2_exp = tensor2.unsqueeze(0).expand(tensor1.size(0), -1, -1)
-        return torch.eq(tensor1_exp, tensor2_exp).all(dim=-1)
-
-    affinity1 = compare_tensors(cls_edge1, cls_edge2)
-    # calculate the distance affinity
-    affinity2 = torch.exp(-lamda1 * (dist1.view(-1, 1) - dist2.view(1, -1)) ** 2)
-    # calculate the angle affinity
-    affinity3 = torch.exp(
-        -lamda2
-        * torch.abs(torch.sin(angle1.view(-1, 1)) - torch.sin(angle2.view(1, -1)))
+    return torch.stack(
+        [_node_affinity_fn(preds1[i], preds2[i]) for i in range(preds1.shape[0])]
     )
-    mu1, mu2 = 0.5, 0.5
-    affinity = affinity1 * (mu1 * affinity2 + mu2 * affinity3)
-    return affinity[None]
+
+
+def edge_affinity_fn(edges1, edges2, lamda1=0.5, lamda2=0.1) -> torch.Tensor:
+    """
+    :param edges1: edges1:(batch_size,n,n,features_len[dist, azimuth, heading, cls_from, cls_to]): the edge matrix of agents
+    :param edges2: edges2:(batch_size,n,n,features_len[dist, azimuth, heading, cls_from, cls_to]): the edge matrix of agents
+    :param lamda1: lamda1 is the weight of distance affinity
+    :param lamda2: lamda2 is the weight of angle affinity
+    :return: affinities: shape(batch_size,n,n): the affinity matrix of agents
+    """
+
+    def _edge_affinity_fn(edges1, edges2):
+        cls_edge1, cls_edge2 = edges1[:, 3:].int(), edges2[:, 3:].int()
+        dist1, dist2 = edges1[:, 0], edges2[:, 0]
+        azu1, azu2 = edges1[:, 1], edges2[:, 1]
+        angle1, angle2 = edges1[:, 2], edges2[:, 2]
+
+        # check if the two edges are of the same class
+        def compare_tensors(tensor1, tensor2):
+            tensor1_exp = tensor1.unsqueeze(1).expand(-1, tensor2.size(0), -1)
+            tensor2_exp = tensor2.unsqueeze(0).expand(tensor1.size(0), -1, -1)
+            return torch.eq(tensor1_exp, tensor2_exp).all(dim=-1)
+
+        affinity1 = compare_tensors(cls_edge1, cls_edge2)
+        # calculate the distance affinity
+        affinity2 = torch.exp(-lamda1 * (dist1.view(-1, 1) - dist2.view(1, -1)) ** 2)
+        # calculate the angle affinity
+        affinity3 = torch.exp(
+            -lamda2
+            * torch.abs(torch.sin(angle1.view(-1, 1)) - torch.sin(angle2.view(1, -1)))
+        )
+        affinity4 = torch.exp(
+            -lamda2
+            * torch.abs(torch.sin(azu1.view(-1, 1)) - torch.cos(azu2.view(1, -1)))
+        )
+        affinity = affinity1 * torch.mean(affinity2 + affinity3 + affinity4)
+        return affinity
+
+    return torch.stack(
+        [_edge_affinity_fn(edges1[i], edges2[i]) for i in range(edges1.shape[0])]
+    )
