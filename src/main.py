@@ -43,7 +43,7 @@ frame = Frame(env, [agent1, agent2, agent3, agent4])
 simulator = Simulator(2, frame)
 noise_setting = [
     {"noise_pos": 0.01, "noise_shape": 0.01, "noise_heading": math.radians(0.01)},
-    {"noise_pos": 1, "noise_shape": 0.1, "noise_heading": math.radians(3)},
+    {"noise_pos": 0.6, "noise_shape": 0.1, "noise_heading": math.radians(3)},
     # {"noise_pos": 0.05, "noise_shape": 0.05, "noise_heading": 0.05},
     # {"noise_pos": 0.1, "noise_shape": 0.1, "noise_heading": 0.1},
     # {"noise_pos": 0.2, "noise_shape": 0.2, "noise_heading": 0.2},
@@ -54,7 +54,7 @@ for i, noise in enumerate(noise_setting):
     end = time.perf_counter()
     print(f"第{i+1}次仿真耗时{end-start}秒")
     simulator.save_simulation_results(
-        format="json", path=f"../data/graph_match_{i}.json"
+        format="json", path=f"../data/graph_match_3_{i}.json"
     )
     # simulator.save_simulation_results(format="console")
 print("finished")

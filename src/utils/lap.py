@@ -44,6 +44,7 @@ def hungarian_match(ego_preds: np.ndarray, cav_preds: np.ndarray, threshold=0.5)
     :param threshold:
     :return: ego_ids, cav_ids
     """
+    
     dist_mat = cdist(ego_preds, cav_preds, metric=compute_joint_dist)
     ego_ids, cav_ids = linear_sum_assignment(dist_mat, maximize=True)
     matching_indices = np.where(dist_mat[ego_ids, cav_ids] > threshold)
@@ -208,13 +209,6 @@ def graph_based_match(ego_preds, cav_preds, associate_func="hungarian"):
     n1, n2 = torch.tensor([ego_graph.shape[0]]), torch.tensor([cav_graph.shape[0]])
     conn1, edge1 = build_conn_edge(ego_graph)
     conn2, edge2 = build_conn_edge(cav_graph)
-    # conn1, edge1 = pygm.utils.dense_to_sparse(ego_graph[:, :, 0])
-    # conn2, edge2 = pygm.utils.dense_to_sparse(cav_graph[:, :, 0])
-
-    # import functools
-    # gaussian_aff = functools.partial(
-    #     pygm.utils.gaussian_aff_fn, sigma=1.0
-    # )  # set affinity function
     K = pygm.utils.build_aff_mat(
         ego_preds,
         edge1,
