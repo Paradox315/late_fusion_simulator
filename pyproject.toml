@@ -47,6 +47,7 @@ typing-extensions = "4.10.0"
 urllib3 = "2.2.1"
 wheel = "0.43.0"
 yarl = "1.9.4"
+jupyter = "^1.0.0"
 
 [tool.poetry.group.dev.dependencies]
 torch = "^2.2.1"
