@@ -167,7 +167,7 @@ class SimAgent(Agent):
             obj[-1] += np.random.randn() * noise_heading * math.pi
             detected.append(obj)
             detected_ids.append(obj_id)
-        if not detected:
+        if len(detected) == 0:
             return None
 
         preds = np.array(detected)

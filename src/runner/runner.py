@@ -22,15 +22,23 @@ class Simulator:
         self,
         fuse_method: Callable[[np.ndarray, np.ndarray], Tuple],
         visualize=False,
-        noise_setting=None,
     ):
         self.results = {}
         for frame in self.frames:
             if visualize:
                 frame.visualize()
-            preds = frame.predict(fuse_method, noise_setting)
+            preds = frame.predict(fuse_method)
             self._update_results(preds)
         return self.results
+
+    def get_dataset(self):
+        results = []
+        for frame in self.frames:
+            data = frame.generate_data()
+            results.extend(data)
+        train_idx = int(len(results) * 0.7)
+        val_idx = int(len(results) * 0.75)
+        return results[:train_idx], results[train_idx:val_idx], results[val_idx:]
 
     def _update_results(self, preds):
         for ego, preds in preds.items():
@@ -38,6 +46,9 @@ class Simulator:
                 self.results[ego] = {}
             for cav, pred in preds.items():
                 self.results[ego].setdefault(cav, []).append(pred)
+
+    def get_records_length(self):
+        return sum([len(v) for v in self.results.values()])
 
     def save_simulation_results(self, format="console", path=None):
         if format == "console":
