@@ -53,7 +53,7 @@ def center_to_coord(centers: np.ndarray):
     return np.array(rotated_rect.exterior.coords.xy).T[:-1]
 
 
-def func_timer(unit="ms"):
+def func_timer(unit="ms", history=[]):
     def decorator(func):
         func.is_first_call = True
 
@@ -74,6 +74,7 @@ def func_timer(unit="ms"):
                 }
                 duration = time_fmt_dict[unit]
                 print(f"{func.__name__} executed in {duration}")  # 打印运行时间信息
+                history.append(end_time - start_time)
                 return result
             else:
                 return func(*args, **kwargs)
@@ -153,18 +154,13 @@ def build_graph(preds: torch.Tensor):
     cls = preds[:, 6]
     angles = preds[:, 5]
     dist_mat = torch.cdist(points, points, p=2)
-    # Expand dimensions
-    points_exp1 = points.unsqueeze(1).expand(-1, points.shape[0], -1)
-    points_exp2 = points.unsqueeze(0).expand(points.shape[0], -1, -1)
-
-    # Compute azimuth
-    azumith = torch.atan(
-        (points_exp2[..., 1] - points_exp1[..., 1])
-        / (points_exp2[..., 0] - points_exp1[..., 0])
-    )
-
-    # Handle division by zero
+    # calculate the azimuth
+    norms = torch.norm(points, dim=1)
+    dot_product = points @ points.t()
+    norm_product = norms.unsqueeze(0) * norms.unsqueeze(1)
+    azumith = torch.acos(dot_product / norm_product)
     azumith[torch.isnan(azumith)] = 0
+    # calculate the heading difference
     theta_mat = torch.abs(angles.unsqueeze(1) - angles.unsqueeze(0))
     cls_from = cls.unsqueeze(1).repeat(1, cls.shape[0])
     cls_to = cls.unsqueeze(0).repeat(cls.shape[0], 1)
@@ -242,7 +238,9 @@ def edge_affinity_fn(edges1, edges2, lamda1=0.5, lamda2=0.1) -> torch.Tensor:
 
         affinity1 = compare_tensors(cls_edge1, cls_edge2)
         # calculate the distance affinity
-        affinity2 = torch.exp(-lamda1 * (dist1.view(-1, 1) - dist2.view(1, -1)) ** 2)
+        affinity2 = torch.exp(
+            -lamda1 * (dist1.view(-1, 1) / (dist2.view(1, -1)) + 1e-2) ** 2
+        )
         # calculate the angle affinity
         affinity3 = torch.exp(
             -lamda2
@@ -252,7 +250,9 @@ def edge_affinity_fn(edges1, edges2, lamda1=0.5, lamda2=0.1) -> torch.Tensor:
             -lamda2
             * torch.abs(torch.sin(azu1.view(-1, 1)) - torch.cos(azu2.view(1, -1)))
         )
-        affinity = affinity1 * torch.mean(affinity2 + affinity3 + affinity4)
+        affinity = affinity1 * torch.stack((affinity2, affinity3, affinity4)).mean(
+            dim=0
+        )
         return affinity
 
     return torch.stack(

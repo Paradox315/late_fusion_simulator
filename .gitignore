@@ -246,6 +246,7 @@ venv.bak/
 # mkdocs documentation
 /site
 data/
+checkpoints/
 
 # mypy
 .mypy_cache/
@@ -268,3 +269,4 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+log/

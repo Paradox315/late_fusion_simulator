@@ -15,6 +15,7 @@ from src.utils.tools import (
 )
 
 pygm.set_backend("pytorch")
+history = []
 
 
 def expand_to_square(matrix: torch.Tensor, pad_value=0) -> torch.Tensor:
@@ -36,7 +37,7 @@ def expand_to_square(matrix: torch.Tensor, pad_value=0) -> torch.Tensor:
     return new_matrix
 
 
-# @func_timer()
+@func_timer()
 def hungarian_match(ego_preds: np.ndarray, cav_preds: np.ndarray, threshold=0.5):
     """
     :param ego_preds: ego predictions n*(id, x, y, w, h, theta, cls, probs)
@@ -44,7 +45,7 @@ def hungarian_match(ego_preds: np.ndarray, cav_preds: np.ndarray, threshold=0.5)
     :param threshold:
     :return: ego_ids, cav_ids
     """
-    
+
     dist_mat = cdist(ego_preds, cav_preds, metric=compute_joint_dist)
     ego_ids, cav_ids = linear_sum_assignment(dist_mat, maximize=True)
     matching_indices = np.where(dist_mat[ego_ids, cav_ids] > threshold)
@@ -53,7 +54,7 @@ def hungarian_match(ego_preds: np.ndarray, cav_preds: np.ndarray, threshold=0.5)
     return ego_ids, cav_ids
 
 
-# @func_timer()
+@func_timer()
 def auction_match(ego_preds: np.ndarray, cav_preds: np.ndarray, threshold=0.5):
     """
     :param ego_preds: ego predictions n*(id, x, y, w, h, theta, cls, probs)
@@ -102,9 +103,6 @@ def auction_lap(cost_matrix: torch.Tensor, eps=None, maximize=True):
         # --
         # Bidding
         unassigned = torch.where(bidder_assignment == -1)[0]
-        # if len(unassigned.size()) == 0:
-        #     unassigned = unassigned.unsqueeze(0)
-
         value = cost_matrix[unassigned] - cost
         top_value, top_idx = value.topk(2, dim=1)
 
@@ -197,13 +195,48 @@ def auction(cost_matrix, maximize=False, eps=1e-3):
     return np.arange(num_workers), worker_assignment.astype(np.int32)
 
 
-# @func_timer()
-def graph_based_match(ego_preds, cav_preds, associate_func="hungarian"):
+@func_timer(history=history)
+def graph_based_match(
+    ego_preds, cav_preds, associate_func="auction", match_func="rrwm"
+):
     """
+    :param associate_func: the associate function, hungarian or auction
+    :param match_func: the matching function: rrwn, ipfp, sm, ngm
     :param ego_preds: ego predictions, n*(id, x, y, w, h, theta, cls, probs)
     :param cav_preds: cav predictions, m*(id, x, y, w, h, theta, cls, probs)
     :return: ego_ids, cav_ids
     """
+    match_func_dict = {
+        "rrwm": pygm.rrwm,
+        "ipfp": pygm.ipfp,
+        "sm": pygm.sm,
+        "ngm": pygm.ngm,
+    }
+    assert associate_func in ["hungarian", "auction"]
+    assert match_func in match_func_dict.keys()
+    K, n1, n2 = build_affinity_matrix(cav_preds, ego_preds)
+    if match_func == "ngm":
+        with torch.set_grad_enabled(False):
+            X = pygm.ngm(K.float(), n1, n2, pretrain="voc")
+    else:
+        X = match_func_dict[match_func](K, n1, n2)
+    if associate_func == "hungarian":
+        match = pygm.hungarian(X)  # 使用匈牙利算法进行匹配
+        ego_ids, cav_ids = np.where(match == 1)
+    else:
+        ego_ids, cav_ids = auction_lap(X)
+    dist = [
+        np.linalg.norm(ego_preds[i][1:3] - cav_preds[j][1:3])
+        for i, j in zip(ego_ids, cav_ids)
+    ]
+    affinities = stats.zscore(dist)
+    # Create a boolean mask for values with abs(zscore) <= 2
+    mask = np.abs(affinities) <= 2
+
+    return ego_ids[mask], cav_ids[mask]
+
+
+def build_affinity_matrix(cav_preds: np.ndarray, ego_preds: np.ndarray):
     ego_preds, cav_preds = torch.from_numpy(ego_preds), torch.from_numpy(cav_preds)
     ego_graph, cav_graph = build_graph(ego_preds), build_graph(cav_preds)
     n1, n2 = torch.tensor([ego_graph.shape[0]]), torch.tensor([cav_graph.shape[0]])
@@ -223,20 +256,4 @@ def graph_based_match(ego_preds, cav_preds, associate_func="hungarian"):
         edge_aff_fn=edge_affinity_fn,
         node_aff_fn=node_affinity_fn,
     )
-    X = pygm.rrwm(K, n1, n2)  # X代表了G1中的每个节点与G2中的每个节点的匹配程度
-    if associate_func == "hungarian":
-        match = pygm.hungarian(X)  # 使用匈牙利算法进行匹配
-        ego_ids, cav_ids = np.where(match == 1)
-    else:
-        ego_ids, cav_ids = auction_lap(X)
-    # return ego_ids, cav_ids
-    # return auction_lap(X)
-    dist = [
-        np.linalg.norm(ego_preds[i][1:3] - cav_preds[j][1:3])
-        for i, j in zip(ego_ids, cav_ids)
-    ]
-    affinities = stats.zscore(dist)
-    # Create a boolean mask for values with abs(zscore) <= 2
-    mask = np.abs(affinities) <= 2
-
-    return ego_ids[mask], cav_ids[mask]
+    return K, n1, n2

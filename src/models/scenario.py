@@ -101,7 +101,7 @@ class SimScenario(Scenario):
                     (x - w / 2, y - h / 2),
                     w,
                     h,
-                    theta * 180 / math.pi,
+                    angle=theta * 180 / math.pi,
                     linewidth=1,
                     edgecolor="b",
                     facecolor="none",

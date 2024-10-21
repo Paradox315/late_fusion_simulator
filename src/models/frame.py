@@ -1,12 +1,11 @@
 from copy import deepcopy
-from typing import List, Tuple, Callable, Dict
+from typing import List, Tuple, Callable, Dict, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
-
 from src.models.agent import Agent, SimAgent
 from src.models.scenario import Scenario, SimScenario
+from src.utils.lap import hungarian_match, build_affinity_matrix
 
 
 def get_ground_truth(ego: Agent | SimAgent, cav: Agent | SimAgent, env: Scenario):
@@ -42,13 +41,22 @@ def filter_preds(
 
 
 class Frame:
-    def __init__(self, env: Scenario | SimScenario, agents: List[Agent | SimAgent]):
+    def __init__(
+        self,
+        env: Scenario | SimScenario,
+        agents: List[Agent | SimAgent],
+        noise_setting=None,
+    ):
         """
         :param env: environment
         :param agents: agents in the environment
         """
         self.env = env
         self.agents = agents
+        self.noise_setting = noise_setting if noise_setting is not None else {}
+        self.cache = {
+            agent.aid: agent.predict(env, **self.noise_setting) for agent in agents
+        }
 
     def __next__(self):
         """
@@ -65,7 +73,7 @@ class Frame:
                 or y > self.env.background.height
             ):
                 return None
-        return Frame(self.env, agents)
+        return Frame(self.env, agents, noise_setting=self.noise_setting)
 
     def visualize(self):
         # Logic to visualize the frame
@@ -81,22 +89,16 @@ class Frame:
     def predict(
         self,
         fuse_method: Callable[[np.ndarray, np.ndarray], Tuple],
-        noisy_setting=None,
     ) -> Dict[str, Dict]:
         """
         :param fuse_method: object fusion method
-        :param noisy_setting: object detection noise setting, including position noise, shape noise.
         :return: prediction results: {ego_id:{cav_id: {correct_preds, false_preds, ego_preds, cav_preds}}}
         """
-        if noisy_setting is None:
-            noisy_setting = {}
         # Logic to predict the next frame
         predict_results = {}
         for ego in self.agents:
             cav_agents = [agent for agent in self.agents if agent != ego]
-            ego_predict_results = self.ego_predict(
-                ego, cav_agents, fuse_method, noisy_setting
-            )
+            ego_predict_results = self.ego_predict(ego, cav_agents, fuse_method)
             predict_results[f"ego{ego.aid}"] = ego_predict_results
         return predict_results
 
@@ -105,23 +107,22 @@ class Frame:
         ego_agent: Agent | SimAgent,
         cav_agents: List[Agent | SimAgent],
         fuse_method: Callable[[np.ndarray, np.ndarray], Tuple],
-        noisy_setting=None,
     ):
         """
-
         :param ego_agent: the ego agent
         :param cav_agents: cav agents
         :param fuse_method: the method to fuse the predictions
-        :param noisy_setting: the noise setting for the predictions
         :return: the prediction results after fusing the predictions from the ego and cav agents
         """
-        if noisy_setting is None:
-            noisy_setting = {}
+
+        def get_preds(agent):
+            if agent.aid in self.cache:
+                return self.cache[agent.aid]
+            return agent.predict(self.env, **self.noise_setting)
+
         # Logic to predict the next frame
         predict_results = {}
-        ego_preds = ego_agent.predict(
-            self.env, **noisy_setting
-        )  # (id, x, y, w, h, cls, probs)
+        ego_preds = get_preds(ego_agent)
         if ego_preds is None:
             return predict_results
         for cav in cav_agents:
@@ -130,13 +131,16 @@ class Frame:
             ground_truth = get_ground_truth(ego_agent, cav, self.env)
             if ground_truth == 0:
                 continue
-            cav_preds = cav.predict(self.env, **noisy_setting)
+            cav_preds = get_preds(cav)
             if cav_preds is None:
                 continue
             ego_preds = filter_preds(ego_preds, ego_agent, cav)
             cav_preds = filter_preds(cav_preds, ego_agent, cav)
             # Logic to fuse the predictions
-            ego_ids, cav_ids = fuse_method(ego_preds, cav_preds)
+            if len(ego_preds) == 1 or len(cav_preds) == 1:
+                ego_ids, cav_ids = hungarian_match(ego_preds, cav_preds)
+            else:
+                ego_ids, cav_ids = fuse_method(ego_preds, cav_preds)
 
             # Note: Assume ego_preds and cav_preds are 2D numpy arrays, and id is at column 0.
             TP = int(np.sum(ego_preds[ego_ids][:, 0] == cav_preds[cav_ids][:, 0]))
@@ -154,3 +158,55 @@ class Frame:
                 "cav_preds": len(cav_preds),
             }
         return predict_results
+
+    def generate_data(self):
+        data_dict = []
+        for ego in self.agents:
+            cav_agents = [agent for agent in self.agents if agent != ego]
+            ego_data = self.ego_generate_data(
+                ego,
+                cav_agents,
+            )
+            if ego_data:
+                data_dict.extend(ego_data)
+        return data_dict
+
+    def ego_generate_data(
+        self, ego_agent: Agent | SimAgent, cav_agents: List[Agent | SimAgent]
+    ) -> Optional[List[Tuple]]:
+        """
+        :param ego_agent: the ego agent
+        :param cav_agents: cav agents
+        :return: the prediction results before fusing the predictions from the ego and cav agents
+        """
+
+        def get_preds(agent):
+            if agent.aid in self.cache:
+                return self.cache[agent.aid]
+            return agent.predict(self.env, **self.noise_setting)
+
+            # Logic to predict the next frame
+
+        ego_preds = get_preds(ego_agent)
+        if ego_preds is None:
+            return None
+        results = []
+        for cav in cav_agents:
+            if not ego_agent.within(cav):
+                continue
+            ground_truth = get_ground_truth(ego_agent, cav, self.env)
+            if ground_truth == 0:
+                continue
+            cav_preds = get_preds(cav)
+            if cav_preds is None:
+                continue
+            ego_preds = filter_preds(ego_preds, ego_agent, cav)
+            cav_preds = filter_preds(cav_preds, ego_agent, cav)
+            if len(ego_preds) <= 1 or len(cav_preds) <= 1:
+                continue
+            K, n1, n2 = build_affinity_matrix(cav_preds, ego_preds)
+            gt = (
+                ego_preds[:, 0].reshape(-1, 1) == cav_preds[:, 0].reshape(1, -1)
+            ).astype(np.int8)
+            results.append((ego_preds, cav_preds, K.numpy(), gt))
+        return results
