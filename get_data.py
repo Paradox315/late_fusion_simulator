@@ -24,7 +24,7 @@ def init_env():
     env = SimScenario(
         100,
         100,
-        [ObjectInfo("car", 100, (3, 4)), ObjectInfo("person", 100, (1, 1))],
+        [ObjectInfo("car", 60, (3, 4)), ObjectInfo("person", 60, (1, 1))],
         roads=[
             Road(10, math.pi / 4, (0, 0)),
             Road(10, math.pi * 3 / 4, (0, 100)),
@@ -59,7 +59,7 @@ def init_simulator(env, agents, noise):
 
 
 def init_noise_setting():
-    noise_pos_values = [0.2, 0.4, 0.6, 0.8, 1]
+    noise_pos_values = [0.5, 1, 2, 3, 4, 5]
     noise_shape_values = [0.05, 0.075, 0.1]
     noise_heading_values = list(map(math.radians, [1, 3, 5]))
 

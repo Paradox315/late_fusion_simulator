@@ -46,18 +46,23 @@ v0 = v0 / torch.mean(v0)
 model = torch.load("checkpoints/ngm_match.pth", map_location=torch.device("cpu"))
 output = model(K, n1, n2, n1max, n2max, v0, sk_max_iter, sk_tau)
 # export model to onnx
-torch.onnx.export(
-    model,
-    args=(K, n1, n2, n1max, n2max, v0, sk_max_iter, sk_tau),
-    dynamic_axes={
-        "K": [0, 1, 2],
-        "v0": [0, 1, 2],
-        "X": [0, 1, 2],
-    },
-    f="checkpoints/ngm_match.onnx",
-    input_names=["K", "n1", "n2", "n1max", "n2max", "v0", "sk_max_iter", "sk_tau"],
-    output_names=["X"],
-    export_params=True,
-    opset_version=11,
-    verbose=True,
+# torch.onnx.export(
+#     model,
+#     args=(K, n1, n2, n1max, n2max, v0, sk_max_iter, sk_tau),
+#     dynamic_axes={
+#         "K": [0, 1, 2],
+#         "v0": [0, 1, 2],
+#         "X": [0, 1, 2],
+#     },
+#     f="checkpoints/ngm_match.onnx",
+#     input_names=["K", "n1", "n2", "n1max", "n2max", "v0", "sk_max_iter", "sk_tau"],
+#     output_names=["X"],
+#     export_params=True,
+#     opset_version=11,
+#     verbose=True,
+# )
+# export model to pt
+torch_script_model = torch.jit.trace(
+    model, (K, n1, n2, n1max, n2max, v0, sk_max_iter, sk_tau)
 )
+torch.jit.save(torch_script_model, "checkpoints/ngm_match.pt")

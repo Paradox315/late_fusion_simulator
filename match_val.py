@@ -1,16 +1,16 @@
 import os
 from typing import Dict
 
-import numpy as np
-import pygmtools as pygm
-import pandas as pd
-import seaborn as sns
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pygmtools as pygm
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.match_dataset import MatchDataset
+from src.utils.lap import ngm_match
 
 dataset_path = (
     "/Users/huyaowen/Projects/python/late_fusion_simulator/data/match_dataset"
@@ -40,7 +40,8 @@ def test(model, loader, criterion):
         for ego_preds, cav_preds, K, gt in tqdm(loader):
             n1 = torch.tensor([ego_preds.shape[1]])
             n2 = torch.tensor([cav_preds.shape[1]])
-            output = pygm.ngm(K, n1, n2, network=model)
+            output = ngm_match(K, n1, n2, model)
+            # output = pygm.ngm(K,n1,n2,network=model)
             acc = (pygm.hungarian(output) * gt).sum() / gt.sum()
             loss = criterion(output, gt)
             loss_hist.append(loss.item())
@@ -72,7 +73,7 @@ def get_network():
 
 
 def plot_results(result_dict: Dict):
-    plt.figure(figsize=(15, 8),dpi=300)  # 调整图像大小
+    plt.figure(figsize=(15, 8), dpi=300)  # 调整图像大小
 
     # 绘制 accuracy 趋势
     plt.subplot(1, 2, 1)
@@ -97,14 +98,12 @@ def plot_results(result_dict: Dict):
     plt.legend()
 
     plt.tight_layout()
-    plt.savefig(
-        "images/trend.png"
-    )
+    plt.savefig("images/trend.png")
     plt.show()
 
 
 def plot_error_bar(result_dict):
-    fig, ax = plt.subplots(1, 2, figsize=(10, 5),dpi=300)
+    fig, ax = plt.subplots(1, 2, figsize=(10, 5), dpi=300)
 
     methods = ["ngm", "rrwm", "sm", "ipfp"]
     metrics = ["accuracy", "loss"]
@@ -126,7 +125,7 @@ if __name__ == "__main__":
     criterion = pygm.utils.permutation_loss
     print("Testing...")
     methods_dict = {"ngm": net, "rrwm": pygm.rrwm, "ipfp": pygm.ipfp, "sm": pygm.sm}
-    result_dict={}
+    result_dict = {}
     for method, func in methods_dict.items():
         print(f"Testing {method} match algorithm...")
         if method == "ngm":
@@ -142,8 +141,9 @@ if __name__ == "__main__":
             "accuracy_std": acc_hist.std(),
         }
 
-        print(f"{method} mean acc:{result_dict[method]["accuracy_mean"]}")
-        print(f"{method} mean loss:{result_dict[method]["loss_mean"]}")
+        print("Results:")
+        print(f'{method} mean acc:{result_dict[method]["accuracy_mean"]}')
+        print(f'{method} mean loss:{result_dict[method]["loss_mean"]}')
 
     plot_results(result_dict)
     plot_error_bar(result_dict)

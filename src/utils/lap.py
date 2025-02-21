@@ -1,17 +1,17 @@
 import numpy as np
-import torch
 import pygmtools as pygm
+import torch
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 from scipy.stats import stats
 
 from src.utils.tools import (
-    compute_joint_dist,
-    node_affinity_fn,
-    func_timer,
-    build_graph,
     build_conn_edge,
+    build_graph,
+    compute_joint_dist,
     edge_affinity_fn,
+    func_timer,
+    node_affinity_fn,
 )
 
 pygm.set_backend("pytorch")
@@ -37,7 +37,7 @@ def expand_to_square(matrix: torch.Tensor, pad_value=0) -> torch.Tensor:
     return new_matrix
 
 
-@func_timer()
+@func_timer(history=history)
 def hungarian_match(ego_preds: np.ndarray, cav_preds: np.ndarray, threshold=0.5):
     """
     :param ego_preds: ego predictions n*(id, x, y, w, h, theta, cls, probs)
@@ -54,7 +54,7 @@ def hungarian_match(ego_preds: np.ndarray, cav_preds: np.ndarray, threshold=0.5)
     return ego_ids, cav_ids
 
 
-@func_timer()
+@func_timer(history=history)
 def auction_match(ego_preds: np.ndarray, cav_preds: np.ndarray, threshold=0.5):
     """
     :param ego_preds: ego predictions n*(id, x, y, w, h, theta, cls, probs)
@@ -257,3 +257,14 @@ def build_affinity_matrix(cav_preds: np.ndarray, ego_preds: np.ndarray):
         node_aff_fn=node_affinity_fn,
     )
     return K, n1, n2
+
+
+def ngm_match(K, n1, n2, network=None, sk_max_iter=20, sk_tau=0.05):
+    n1max, n2max = n1.max(), n2.max()
+    v0 = torch.diag(K[0]).reshape(1, K.shape[1], 1)
+    result = network(K, n1, n2, n1max, n2max, v0, sk_max_iter, sk_tau)
+    return result
+
+
+def gcn_match(K, n1, n2, network):
+    return network(K[0], n1, n2).unsqueeze(0)

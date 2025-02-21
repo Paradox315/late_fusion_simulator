@@ -208,5 +208,7 @@ class Frame:
             gt = (
                 ego_preds[:, 0].reshape(-1, 1) == cav_preds[:, 0].reshape(1, -1)
             ).astype(np.int8)
+            if gt.sum() == 0:
+                continue
             results.append((ego_preds, cav_preds, K.numpy(), gt))
         return results
