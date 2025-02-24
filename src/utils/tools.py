@@ -147,7 +147,7 @@ def compute_joint_dist(preds1, preds2):
 
 def build_graph(preds: torch.Tensor):
     """
-    :param preds: (id, x_center, y_center, width, height, theta, cls, attr_probs)
+    :param preds: shape:(n,9),the feature is(id, x_center, y_center, width, height, theta, cls, attr_probs)
     :return: graph: shape(n,n): the graph of agents
     """
     points = preds[:, 1:3]

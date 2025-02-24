@@ -81,54 +81,54 @@ if __name__ == "__main__":
     agents = init_agents(env)
     for i, noise in enumerate(noise_setting):
         simulator = init_simulator(env, agents, noise)
-        for node_match_func in node_match_funcs:
-            logger.info(
-                {
-                    "message": f"starting simulation {i+1} using {node_match_func} for node matching",
-                    "noise_setting": noise,
-                }
-            )
-            start = time.perf_counter_ns()
-            simulator.run(node_match_func, visualize=False)
-            end = time.perf_counter_ns()
-            logger.info(
-                {
-                    "message": f"simulation {i+1} using {node_match_func} for node matching finished",
-                    "time": (end - start) / simulator.get_records_length() * 1e-6,
-                }
-            )
-            print(f"mean cost time: {mean_cost_time(history)}ms")
-            history.clear()
-            simulator.save_simulation_results()
-            # simulator.save_simulation_results(
-            #     format="json", path=f"./data/node_match_{node_match_func}_{i}.json"
-            # )
-        # for match_func in graph_match_funcs:
+        # for node_match_func in node_match_funcs:
         #     logger.info(
         #         {
-        #             "message": f"starting simulation {i+1} using {match_func} for graph matching",
-        #             "match_func": match_func,
+        #             "message": f"starting simulation {i+1} using {node_match_func} for node matching",
         #             "noise_setting": noise,
         #         }
         #     )
         #     start = time.perf_counter_ns()
-        #     simulator.run(
-        #         functools.partial(
-        #             graph_based_match, associate_func="hungarian", match_func=match_func
-        #         ),
-        #         visualize=False,
-        #     )
+        #     simulator.run(node_match_func, visualize=False)
         #     end = time.perf_counter_ns()
         #     logger.info(
         #         {
-        #             "message": f"simulation {i+1} using {match_func} for graph matching finished",
-        #             "match_func": match_func,
+        #             "message": f"simulation {i+1} using {node_match_func} for node matching finished",
         #             "time": (end - start) / simulator.get_records_length() * 1e-6,
         #         }
         #     )
         #     print(f"mean cost time: {mean_cost_time(history)}ms")
         #     history.clear()
         #     simulator.save_simulation_results()
+        #     # simulator.save_simulation_results(
+        #     #     format="json", path=f"./data/node_match_{node_match_func}_{i}.json"
+        #     # )
+        for match_func in graph_match_funcs:
+            logger.info(
+                {
+                    "message": f"starting simulation {i+1} using {match_func} for graph matching",
+                    "match_func": match_func,
+                    "noise_setting": noise,
+                }
+            )
+            start = time.perf_counter_ns()
+            simulator.run(
+                functools.partial(
+                    graph_based_match, associate_func="hungarian", match_func=match_func
+                ),
+                visualize=False,
+            )
+            end = time.perf_counter_ns()
+            logger.info(
+                {
+                    "message": f"simulation {i+1} using {match_func} for graph matching finished",
+                    "match_func": match_func,
+                    "time": (end - start) / simulator.get_records_length() * 1e-6,
+                }
+            )
+            print(f"mean cost time: {mean_cost_time(history)}ms")
+            history.clear()
+            simulator.save_simulation_results()
         # simulator.save_simulation_results(
         #     format="json", path=f"./data/graph_match_{match_func}_{i}.json"
         # )

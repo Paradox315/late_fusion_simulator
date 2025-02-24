@@ -103,10 +103,7 @@ def test_classic(algo, loader, criterion):
 if __name__ == "__main__":
     train_loader, test_loader = init()
     # net = get_network()
-    net = NGM_Net(
-        gnn_channels=(16, 16, 16),
-        sk_emb=1,
-    )
+    net = pygm.utils.get_network(pygm.ngm)
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
     criterion = pygm.utils.permutation_loss
     losses, accs = train(net, train_loader, criterion, optimizer, num_epochs=1)

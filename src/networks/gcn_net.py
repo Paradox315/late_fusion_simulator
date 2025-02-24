@@ -134,8 +134,8 @@ class GCN_Net(torch.nn.Module):
 
         A = (K != 0).float()
         emb_K = K.unsqueeze(-1)
-        emb = torch.diag(K).reshape(n1 * n2, 1)
-
+        # emb = torch.diag(K).reshape(n1 * n2, 1)
+        emb = torch.ones((n1 * n2, 1))
         # NGM qap solver with GNN layers
         for i in range(self.gnn_layer):
             gnn_layer = getattr(self, f"gnn_layer_{i}")

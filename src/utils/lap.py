@@ -1,3 +1,5 @@
+from logging import raiseExceptions
+
 import numpy as np
 import pygmtools as pygm
 import torch
@@ -259,12 +261,95 @@ def build_affinity_matrix(cav_preds: np.ndarray, ego_preds: np.ndarray):
     return K, n1, n2
 
 
+def build_affinity_matrix_v2(
+    node_aff_mat: torch.Tensor,
+    edge_aff_mat: torch.Tensor,
+    graph1_edges: torch.Tensor,
+    graph2_edges: torch.Tensor,
+) -> torch.Tensor:
+    """构建二阶亲和矩阵
+
+    Args:
+        node_aff_mat: 节点相似度矩阵，形状 (num_nodes1, num_nodes2)
+        edge_aff_mat: 边相似度矩阵，形状 (num_edges1, num_edges2)
+        graph1_edges: 图1的边连接关系，形状 (num_edges1, 2)
+        graph2_edges: 图2的边连接关系，形状 (num_edges2, 2)
+    Returns:
+        affinity_matrix: 二阶亲和矩阵，形状 (num_nodes1*num_nodes2, num_nodes1*num_nodes2)
+    """
+    assert node_aff_mat is not None or edge_aff_mat is not None
+    device = edge_aff_mat.device if edge_aff_mat is not None else node_aff_mat.device
+    dtype = edge_aff_mat.dtype if edge_aff_mat is not None else node_aff_mat.dtype
+    num_nodes1, num_nodes2 = node_aff_mat.shape
+    num_edges1, num_edges2 = edge_aff_mat.shape
+
+    # 初始化二阶亲和矩阵K
+    affinity_matrix = torch.zeros(
+        num_nodes2, num_nodes1, num_nodes2, num_nodes1, dtype=dtype, device=device
+    )
+
+    # 处理边的亲和度
+    if edge_aff_mat is not None:
+        # 构建边的索引矩阵
+        edge_indices = _build_edge_indices(
+            graph1_edges[:num_edges1], graph2_edges[:num_edges2], num_edges1, num_edges2
+        )
+        # 填充边的亲和度值
+        affinity_matrix[edge_indices] = edge_aff_mat[:num_edges1, :num_edges2].reshape(
+            -1
+        )
+
+    # 重塑为方阵
+    affinity_matrix = affinity_matrix.reshape(
+        num_nodes2 * num_nodes1, num_nodes2 * num_nodes1
+    )
+
+    # 处理节点的亲和度
+    if node_aff_mat is not None:
+        diagonal = torch.diagonal(affinity_matrix)
+        diagonal[:] = node_aff_mat.t().reshape(-1)
+
+    return affinity_matrix
+
+
+def _build_edge_indices(
+    edges1: torch.Tensor, edges2: torch.Tensor, num_edges1: int, num_edges2: int
+) -> tuple[torch.Tensor, ...]:
+    """构建边的索引矩阵
+
+    Args:
+        edges1: 图1的边，形状 (num_edges1, 2)
+        edges2: 图2的边，形状 (num_edges2, 2)
+        num_edges1: 图1的边数
+        num_edges2: 图2的边数
+
+    Returns:
+        edge_indices: 边索引元组 (start_g2, start_g1, end_g2, end_g1)
+    """
+    combined_edges = torch.cat(
+        [edges1.repeat_interleave(num_edges2, dim=0), edges2.repeat(num_edges1, 1)],
+        dim=1,
+    )
+
+    return (
+        combined_edges[:, 2],  # start_g2
+        combined_edges[:, 0],  # start_g1
+        combined_edges[:, 3],  # end_g2
+        combined_edges[:, 1],  # end_g1
+    )
+
+
 def ngm_match(K, n1, n2, network=None, sk_max_iter=20, sk_tau=0.05):
-    n1max, n2max = n1.max(), n2.max()
-    v0 = torch.diag(K[0]).reshape(1, K.shape[1], 1)
-    result = network(K, n1, n2, n1max, n2max, v0, sk_max_iter, sk_tau)
+    # n1max, n2max = n1.max(), n2.max()
+    # v0 = torch.diag(K[0]).reshape(1, K.shape[1], 1)
+    # result = network(K, n1, n2, n1max, n2max, v0, sk_max_iter, sk_tau)
+    result = pygm.ngm(K, n1, n2, network=network)
     return result
 
 
 def gcn_match(K, n1, n2, network):
     return network(K[0], n1, n2).unsqueeze(0)
+
+
+def gcn_match_v2(ego_preds, cav_preds, network):
+    return network(ego_preds, cav_preds)

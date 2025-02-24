@@ -6,15 +6,14 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.match_dataset import MatchDataset
-from src.networks.gcn_net_new import GCN_Net
-from src.utils.lap import gcn_match, build_affinity_matrix, gcn_match_v2
-from src.utils.tools import build_graph
+from src.networks.gcn_net_v2 import GCN_Net, pad_predictions
 
 dataset_path = "../../data/match_dataset"
 checkpoint_path = "../../checkpoints"
 pygm.set_backend("pytorch")
 device = torch.device("mps" if torch.cuda.is_available() else "cpu")
-model_name = "gcn_new"
+model_name = "gcn_v2"
+torch.manual_seed(42)
 
 
 def init():
@@ -35,11 +34,17 @@ def train(model, loader, criterion, optimizer, scheduler, num_epochs=3):
         print(f"Epoch {epoch + 1}")
         total_loss, total_acc = 0, 0
         for i, (ego_preds, cav_preds, _, gt) in enumerate(tqdm(loader)):
-            # n1 = torch.tensor([ego_preds.shape[1]])
-            # n2 = torch.tensor([cav_preds.shape[1]])
-            # K = build_affinity_matrix(cav_preds[0].numpy(), ego_preds[0].numpy())
-            # output = gcn_match(K, n1, n2, model)
-            output = model(ego_preds, cav_preds).unsqueeze(0)
+            ego_preds, cav_preds, gt = (
+                ego_preds.to(device),
+                cav_preds.to(device),
+                gt.to(device),
+            )
+            ego_preds, ego_mask = pad_predictions(ego_preds[0, :, 1:])
+            cav_preds, cav_mask = pad_predictions(cav_preds[0, :, 1:])
+            n1, n2 = ego_mask.sum(), cav_mask.sum()
+            output = model(ego_preds, ego_mask, cav_preds, cav_mask)[
+                :n1, :n2
+            ].unsqueeze(0)
             acc = (pygm.hungarian(output) * gt).sum() / gt.sum()
             loss = criterion(output, gt)
             loss.backward()  # Backward pass
@@ -63,10 +68,17 @@ def test(model, loader, criterion):
     total_loss, total_acc = 0, 0
     with torch.no_grad():
         for ego_preds, cav_preds, K, gt in tqdm(loader):
-            # n1 = torch.tensor([ego_preds.shape[1]])
-            # n2 = torch.tensor([cav_preds.shape[1]])
-            # output = gcn_match(K, n1, n2, model)
-            output = model(ego_preds, cav_preds).unsqueeze(0)
+            ego_preds, cav_preds, gt = (
+                ego_preds.to(device),
+                cav_preds.to(device),
+                gt.to(device),
+            )
+            ego_preds, ego_mask = pad_predictions(ego_preds[0, :, 1:])
+            cav_preds, cav_mask = pad_predictions(cav_preds[0, :, 1:])
+            n1, n2 = ego_mask.sum(), cav_mask.sum()
+            output = model(ego_preds, ego_mask, cav_preds, cav_mask)[
+                :n1, :n2
+            ].unsqueeze(0)
             acc = (pygm.hungarian(output) * gt).sum() / gt.sum()
             loss = criterion(output, gt)
             total_acc += acc.item()
@@ -77,6 +89,7 @@ def test(model, loader, criterion):
 def get_network():
     # 查找checkpoint_path路径下是否前缀为model的文件，解析出最新的epoch
     epoch = 0
+    net = GCN_Net((32, 32, 32), 1)
     if os.path.exists(checkpoint_path):
         checkpoint_files = os.listdir(checkpoint_path)
         checkpoint_files = [
@@ -87,28 +100,32 @@ def get_network():
         if checkpoint_files:
             epoch = max([int(f.split("_")[-1].split(".")[0]) for f in checkpoint_files])
             print(f"Loading {epoch} Epoch checkpoint...")
-            net = torch.load(f"{checkpoint_path}/{model_name}_model_{epoch}.pth")
+            state_dict = torch.load(f"{checkpoint_path}/{model_name}_model_{epoch}.pth")
+            net.load_state_dict(state_dict)
         else:
             print("Initializing network...")
-            net = GCN_Net((32, 32, 32), 1)
     else:
         os.makedirs(checkpoint_path)
         print("Initializing network...")
-        net = GCN_Net((32, 32, 32), 1)
     net.to(device)
     return net, epoch
 
 
 def save_checkpoint(model, epoch):
     print(f"Saving {epoch} Epoch checkpoint...")
-    torch.save(model, f"{checkpoint_path}/{model_name}_model_{epoch}.pth")
+    torch.save(model.state_dict(), f"{checkpoint_path}/{model_name}_model_{epoch}.pth")
 
 
 def test_classic(algo, loader, criterion):
     total_loss, total_acc = 0, 0
     for i, (ego_preds, cav_preds, K, gt) in enumerate(tqdm(loader)):
-        n1 = torch.tensor([ego_preds.shape[1]])
-        n2 = torch.tensor([cav_preds.shape[1]])
+        ego_preds, cav_preds, gt = (
+            ego_preds.to(device),
+            cav_preds.to(device),
+            gt.to(device),
+        )
+        n1 = torch.tensor([ego_preds.shape[1]], device=device)
+        n2 = torch.tensor([cav_preds.shape[1]], device=device)
         output = algo(K, n1, n2)
         acc = (pygm.hungarian(output) * gt).sum() / gt.sum()
         loss = criterion(output, gt)
@@ -124,16 +141,16 @@ if __name__ == "__main__":
     # 使用学习率调度器
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
     criterion = pygm.utils.permutation_loss
-    num_epochs = 25
+    num_epochs = 20
     losses, accs = train(
         net, train_loader, criterion, optimizer, scheduler, num_epochs=num_epochs
     )
     save_checkpoint(net, epoch_init + num_epochs)
-    print(f"Train Loss: {losses}, Train Acc: {accs}")
-    print("Testing...")
-    test_loss, test_acc = test(net, test_loader, criterion)
-    print(f"Test Loss: {test_loss}, Test Acc: {test_acc}")
-
-    print("Testing classic algorithms...")
-    test_loss, test_acc = test_classic(pygm.rrwm, test_loader, criterion)
-    print(f"Test Loss: {test_loss}, Test Acc: {test_acc}")
+    # print(f"Train Loss: {losses}, Train Acc: {accs}")
+    # print("Testing...")
+    # test_loss, test_acc = test(net, test_loader, criterion)
+    # print(f"Test Loss: {test_loss}, Test Acc: {test_acc}")
+    #
+    # print("Testing classic algorithms...")
+    # test_loss, test_acc = test_classic(pygm.rrwm, test_loader, criterion)
+    # print(f"Test Loss: {test_loss}, Test Acc: {test_acc}")
