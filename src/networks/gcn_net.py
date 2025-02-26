@@ -4,8 +4,6 @@ import torch
 import torch.nn as nn
 from pygmtools import sinkhorn
 import torch.nn.functional as F
-import torch_geometric
-from torch_geometric.nn import MessagePassing
 
 
 # 定义适配 torch_geometric 的图卷积层
@@ -61,7 +59,7 @@ class NGMConvLayer(nn.Module):
         :param sk_func: Sinkhorn 函数
         """
         # 传递消息
-        x1 = self.n_self_func(x)  # 更新邻居特征
+        x1 = self.n_func(x)  # 更新邻居特征
         # A = F.normalize(A, p=1, dim=1)
         A = A / (A.sum(dim=1, keepdim=True) + 1e-8)
         x2 = (
@@ -71,7 +69,7 @@ class NGMConvLayer(nn.Module):
             .squeeze(-1)
             .t()
         )
-        x2 += self.n_func(x)  # 加上自身特征
+        x2 += self.n_self_func(x)  # 加上自身特征
 
         # 跳跃连接
         if self.classifier is not None:
@@ -134,8 +132,8 @@ class GCN_Net(torch.nn.Module):
 
         A = (K != 0).float()
         emb_K = K.unsqueeze(-1)
-        # emb = torch.diag(K).reshape(n1 * n2, 1)
-        emb = torch.ones((n1 * n2, 1))
+        emb = torch.diag(K).reshape(n1 * n2, 1)
+        # emb = torch.ones((n1 * n2, 1))
         # NGM qap solver with GNN layers
         for i in range(self.gnn_layer):
             gnn_layer = getattr(self, f"gnn_layer_{i}")
