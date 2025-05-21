@@ -3,6 +3,7 @@ from logging import raiseExceptions
 import numpy as np
 import pygmtools as pygm
 import torch
+import torch.nn as nn
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 from scipy.stats import stats
@@ -218,8 +219,7 @@ def graph_based_match(
     assert match_func in match_func_dict.keys()
     K, n1, n2 = build_affinity_matrix(cav_preds, ego_preds)
     if match_func == "ngm":
-        with torch.set_grad_enabled(False):
-            X = pygm.ngm(K.float(), n1, n2, pretrain="voc")
+        X = pygm.ngm(K.float(), n1, n2)
     else:
         X = match_func_dict[match_func](K, n1, n2)
     if associate_func == "hungarian":
@@ -236,6 +236,29 @@ def graph_based_match(
     mask = np.abs(affinities) <= 2
 
     return ego_ids[mask], cav_ids[mask]
+
+
+def gcn_graph_match(ego_preds, cav_preds, gcn_model, score_model):
+    """
+    :param ego_preds: ego predictions, n*(id, x, y, w, h, theta, cls, probs)
+    :param cav_preds: cav predictions, m*(id, x, y, w, h, theta, cls, probs)
+    :return: ego_ids, cav_ids
+    """
+    dist_mat = cdist(ego_preds, cav_preds, metric=compute_joint_dist)
+    K, n1, n2 = build_affinity_matrix(cav_preds, ego_preds)
+    output = gcn_batch_match(K, n1, n2, gcn_model, score_model)
+    ego_ids, cav_ids = np.where(pygm.hungarian(output) == 1)
+    return ego_ids, cav_ids
+    # return hungarian_match(ego_preds, cav_preds)
+
+    # dist = [
+    #     np.linalg.norm(ego_preds[i][1:3] - cav_preds[j][1:3])
+    #     for i, j in zip(ego_ids, cav_ids)
+    # ]
+    # affinities = stats.zscore(dist)
+    # # Create a boolean mask for values with abs(zscore) <= 2
+    # mask = np.abs(affinities) <= 2
+    # return ego_ids[mask], cav_ids[mask]
 
 
 def build_affinity_matrix(cav_preds: np.ndarray, ego_preds: np.ndarray):
@@ -353,3 +376,40 @@ def gcn_match(K, n1, n2, network):
 
 def gcn_match_v2(ego_preds, cav_preds, network):
     return network(ego_preds, cav_preds)
+
+
+def gcn_batch_match(K, n1, n2, gcn_model, score_model) -> torch.Tensor:
+    """
+    :param K: shape (max_size^2,max_size^2)  # 邻接矩阵
+    :return:
+    """
+    max_size = 32
+    K_padded = torch.zeros((max_size**2, max_size**2))
+    K_padded[: n1 * n2, : n1 * n2] = K
+
+    A = (K_padded != 0).float()
+    A = A / (A.sum(dim=1, keepdim=True) + 1e-8)
+    W = A * K_padded
+    x = torch.zeros((max_size**2, 32), device=K.device)
+    x[:, 0] = torch.diagonal(K_padded)
+    x = gcn_model(W, x)
+    output = score_model(x, n1, n2)
+    return output  # shape (n1, n2)
+
+
+class ScoreLayer(nn.Module):
+    def __init__(self, max_size=32):
+        super(ScoreLayer, self).__init__()
+        self.max_size = max_size
+        # 分类器层
+        self.classifier = nn.Linear(32, 1)
+
+    def forward(self, x, n1, n2):
+        """
+        :param x: shape (max_size^2,max_size^2)  # 邻接矩阵
+        :return:
+        """
+        # 分类器输出
+        scores = self.classifier(x[: n1 * n2]).view(n2, n1).t()
+        scores = torch.softmax(scores, dim=-1)
+        return scores

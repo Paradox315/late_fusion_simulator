@@ -8,7 +8,7 @@ from tqdm import tqdm
 from src.match_dataset import MatchDataset
 from src.networks.gcn_net_v2 import GCN_Net, pad_predictions
 
-dataset_path = "../../data/match_dataset"
+dataset_path = "../../data/detect_dataset"
 checkpoint_path = "../../checkpoints"
 pygm.set_backend("pytorch")
 device = torch.device("mps" if torch.cuda.is_available() else "cpu")
@@ -25,7 +25,7 @@ def init():
 
 
 # 定义训练函数
-def train(model, loader, criterion, optimizer, scheduler, num_epochs=3):
+def train(model, loader, optimizer, scheduler, num_epochs=3):
     model.train()
     losses = []
     accs = []
@@ -33,20 +33,21 @@ def train(model, loader, criterion, optimizer, scheduler, num_epochs=3):
     for epoch in range(num_epochs):
         print(f"Epoch {epoch + 1}")
         total_loss, total_acc = 0, 0
-        for i, (ego_preds, cav_preds, _, gt) in enumerate(tqdm(loader)):
-            ego_preds, cav_preds, gt = (
+        for i, (ego_preds, cav_preds, _, match_gt, obj_gt) in enumerate(tqdm(loader)):
+            ego_preds, cav_preds, match_gt, obj_gt = (
                 ego_preds.to(device),
                 cav_preds.to(device),
-                gt.to(device),
+                match_gt.to(device),
+                obj_gt.to(device),
             )
-            ego_preds, ego_mask = pad_predictions(ego_preds[0, :, 1:])
-            cav_preds, cav_mask = pad_predictions(cav_preds[0, :, 1:])
+            ego_preds, ego_mask = pad_predictions(ego_preds[0])
+            cav_preds, cav_mask = pad_predictions(cav_preds[0])
             n1, n2 = ego_mask.sum(), cav_mask.sum()
-            output = model(ego_preds, ego_mask, cav_preds, cav_mask)[
-                :n1, :n2
-            ].unsqueeze(0)
-            acc = (pygm.hungarian(output) * gt).sum() / gt.sum()
-            loss = criterion(output, gt)
+            output, fused_preds = model(ego_preds, ego_mask, cav_preds, cav_mask)
+            output = output[:n1, :n2].unsqueeze(0)
+            match_output = pygm.hungarian(output)
+            acc = (match_output * match_gt).sum() / match_gt.sum()
+            loss = pygm.utils.permutation_loss(output, match_gt)
             loss.backward()  # Backward pass
             optimizer.step()  # Now we can do an optimizer step
             optimizer.zero_grad()  # Reset gradients tensors
@@ -67,20 +68,20 @@ def test(model, loader, criterion):
     model.eval()
     total_loss, total_acc = 0, 0
     with torch.no_grad():
-        for ego_preds, cav_preds, K, gt in tqdm(loader):
-            ego_preds, cav_preds, gt = (
+        for ego_preds, cav_preds, _, match_gt, _ in tqdm(loader):
+            ego_preds, cav_preds, match_gt = (
                 ego_preds.to(device),
                 cav_preds.to(device),
-                gt.to(device),
+                match_gt.to(device),
             )
-            ego_preds, ego_mask = pad_predictions(ego_preds[0, :, 1:])
-            cav_preds, cav_mask = pad_predictions(cav_preds[0, :, 1:])
+            ego_preds, ego_mask = pad_predictions(ego_preds[0])
+            cav_preds, cav_mask = pad_predictions(cav_preds[0])
             n1, n2 = ego_mask.sum(), cav_mask.sum()
             output = model(ego_preds, ego_mask, cav_preds, cav_mask)[
                 :n1, :n2
             ].unsqueeze(0)
-            acc = (pygm.hungarian(output) * gt).sum() / gt.sum()
-            loss = criterion(output, gt)
+            acc = (pygm.hungarian(output) * match_gt).sum() / match_gt.sum()
+            loss = criterion(output, match_gt)
             total_acc += acc.item()
             total_loss += loss.item()
     return total_loss / len(loader), total_acc / len(loader)
@@ -118,7 +119,7 @@ def save_checkpoint(model, epoch):
 
 def test_classic(algo, loader, criterion):
     total_loss, total_acc = 0, 0
-    for i, (ego_preds, cav_preds, K, gt) in enumerate(tqdm(loader)):
+    for i, (ego_preds, cav_preds, K, gt, _) in enumerate(tqdm(loader)):
         ego_preds, cav_preds, gt = (
             ego_preds.to(device),
             cav_preds.to(device),
@@ -141,15 +142,13 @@ if __name__ == "__main__":
     # 使用学习率调度器
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
     criterion = pygm.utils.permutation_loss
-    num_epochs = 20
-    losses, accs = train(
-        net, train_loader, criterion, optimizer, scheduler, num_epochs=num_epochs
-    )
-    save_checkpoint(net, epoch_init + num_epochs)
-    # print(f"Train Loss: {losses}, Train Acc: {accs}")
-    # print("Testing...")
-    # test_loss, test_acc = test(net, test_loader, criterion)
-    # print(f"Test Loss: {test_loss}, Test Acc: {test_acc}")
+    num_epochs = 25
+    losses, accs = train(net, train_loader, optimizer, scheduler, num_epochs=num_epochs)
+    # save_checkpoint(net, epoch_init + num_epochs)
+    print(f"Train Loss: {losses}, Train Acc: {accs}")
+    print("Testing...")
+    test_loss, test_acc = test(net, test_loader, criterion)
+    print(f"Test Loss: {test_loss}, Test Acc: {test_acc}")
     #
     # print("Testing classic algorithms...")
     # test_loss, test_acc = test_classic(pygm.rrwm, test_loader, criterion)

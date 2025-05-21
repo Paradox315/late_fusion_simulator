@@ -5,7 +5,7 @@ from src.utils.lap import build_affinity_matrix_v2
 from src.utils.tools import build_conn_edge, build_graph
 
 
-def sinkhorn_log(scores, eps=0.1, n_iter=3):
+def sinkhorn_log(scores, tau=1e-2, max_iter=10):
     """
     Sinkhorn algorithm in log-space
     :param scores: shape(n, m) - input matrix
@@ -16,13 +16,13 @@ def sinkhorn_log(scores, eps=0.1, n_iter=3):
     n, m = scores.shape
 
     # Initialize log domain matrix L = log Q = -scores / eps
-    L = -scores / eps
+    L = -scores / tau
 
     # Set log scaling factors (r are ones, c are scaled to match the desired sum along columns)
     log_r = torch.zeros(n, device=L.device)  # since r=1 => log(1)=0
     log_c = torch.log(torch.ones(m, device=L.device) * (n / m))
 
-    for _ in range(n_iter):
+    for _ in range(max_iter):
         # Normalize columns: compute log sum over rows
         logsum_cols = torch.logsumexp(L, dim=0)  # shape: (m,)
         log_u = log_c - logsum_cols  # adjustment for columns
@@ -110,9 +110,7 @@ class NGMConvLayer(nn.Module):
         if self.classifier is not None:
             sk_features = self.classifier(x_out)
             sk_matrix = sk_features.view(n1, n2)
-            # sk_output = self.sk_func(
-            #     sk_matrix, torch.tensor([n1]), torch.tensor([n2]), dummy_row=True
-            # )
+
             sk_output = torch.softmax(sk_matrix, dim=-1)
             x_out = x_out + sk_output.reshape(-1, self.sk_channel)
         x_out_padded = torch.zeros(
@@ -217,14 +215,20 @@ class GCN_Net(nn.Module):
         s = scores.view(n2, n1).t()
 
         # Apply masks to get original size output
-        # output = self.sinkhorn_fn(
-        #     s,
-        #     torch.tensor([n1]),
-        #     torch.tensor([n2]),
-        #     dummy_row=True,
-        # )
-        # output = sinkhorn_log(s)
-        output = torch.softmax(s, dim=-1)
+        output = sinkhorn_log(s)
+
+        fused_preds = torch.zeros((self.max_size, 5), device=output.device)
+
+        # Get indices where output > 0.8
+        # matches = (output > 0.8).nonzero()
+        # if len(matches) > 0:
+        #     i, j = matches[:, 0], matches[:, 1]
+        #     conf_ego = ego_preds[i, 6:].max()
+        #     conf_cav = cav_preds[j, 6:].max()
+        #     fused_preds[i] = (
+        #         ego_preds[i, :6] * conf_ego.unsqueeze(1)
+        #         + cav_preds[j, :6] * conf_cav.unsqueeze(1)
+        #     ) / (conf_ego + conf_cav).unsqueeze(1)
 
         # Pad output to fixed size
         padded_output = torch.zeros(
@@ -232,7 +236,7 @@ class GCN_Net(nn.Module):
         )
         padded_output[:n1, :n2] = output
 
-        return padded_output
+        return padded_output, fused_preds
 
 
 # Node affinity function

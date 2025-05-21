@@ -1,4 +1,3 @@
-import numpy as np
 import onnx
 import onnxruntime as ort
 import pygmtools as pygm
@@ -7,10 +6,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.match_dataset import MatchDataset
-from src.networks.gcn_net_batch import GCN_Net
-from src.train.gcn_train_batch import test as gcn_test
 
-dataset_path = "../data/match_dataset"
+dataset_path = "data/match_dataset"
 pygm.set_backend("pytorch")
 device = torch.device("mps" if torch.cuda.is_available() else "cpu")
 model_name = "gcn_v2"
@@ -55,26 +52,8 @@ def test(ort_session, loader):
 
 if __name__ == "__main__":
     train_loader, test_loader = init()
-    model = onnx.load("../checkpoints/gcn_net_v3_1.onnx")
+    model = onnx.load("checkpoints/gcn_net_v3_1.onnx")
     onnx.checker.check_model(model)
-    ort_session = ort.InferenceSession("../checkpoints/gcn_net_v3_1.onnx")
-    K = torch.randn((1024, 1024))
-    mask = torch.zeros((32, 32))
-    net = GCN_Net((32, 32, 32))
-    state_dict = torch.load("../checkpoints/gcn_v3_model_3.pth", weights_only=False)
-    net.load_state_dict(state_dict)
-    net.eval()
-    torch_out = net(K, mask)
-    ort_inputs = {
-        "K": to_numpy(K),
-        "mask": to_numpy(mask),
-    }
-    ort_outs = ort_session.run(None, ort_inputs)
-    print(torch_out)
-    print(ort_outs[0])
-    # Compare the output with PyTorch
-    np.testing.assert_allclose(to_numpy(torch_out), ort_outs[0], rtol=1e-03, atol=1e-05)
+    ort_session = ort.InferenceSession("checkpoints/gcn_net_v3_1.onnx")
     acc1 = test(ort_session, test_loader)
     print(f"Test Accuracy: {acc1}")
-    _, acc2 = gcn_test(net, test_loader, pygm.utils.permutation_loss)
-    print(f"Test Accuracy: {acc2}")

@@ -1,3 +1,4 @@
+import time
 from copy import deepcopy
 from typing import List, Tuple, Callable, Dict, Optional
 
@@ -15,8 +16,8 @@ def get_ground_truth(ego: Agent | SimAgent, cav: Agent | SimAgent, env: Scenario
     :param env: environment
     :return: ground truth of the number of objects in the intersection of ego and cav
     """
-    return sum(
-        1 for _, obj in env.objects.items() if ego.within(obj) and cav.within(obj)
+    return np.array(
+        [obj for _, obj in env.objects.items() if ego.within(obj) and cav.within(obj)]
     )
 
 
@@ -29,6 +30,8 @@ def filter_preds(
     :param cav:
     :return: the subset of predictions that are within the intersection of ego and cav
     """
+    if preds.shape[0] == 0:
+        return preds
     subset = preds[:, 1:3]
 
     # 创建一个布尔数组表示每个预测是否在 ego 和 cav 的范围内
@@ -125,14 +128,22 @@ class Frame:
         ego_preds = get_preds(ego_agent)
         if ego_preds is None:
             return predict_results
+        print(f"ego {ego_agent.aid}开始评估...")
+        filtered_cav = 0
         for cav in cav_agents:
+            t0 = time.perf_counter_ns()
             if not ego_agent.within(cav):
+                print(f"不与 cav {cav.aid} 进行匹配")
+                end = time.perf_counter_ns()
+                print(f"处理时间: {(end-t0)/1e6}ms\n")
+                filtered_cav += 1
                 continue
+            print(f"开始与 cav {cav.aid} 进行匹配")
             ground_truth = get_ground_truth(ego_agent, cav, self.env)
-            if ground_truth == 0:
+            if len(ground_truth) == 0:
                 continue
             cav_preds = get_preds(cav)
-            if cav_preds is None:
+            if cav_preds is None or len(cav_preds) == 0:
                 continue
             ego_preds = filter_preds(ego_preds, ego_agent, cav)
             cav_preds = filter_preds(cav_preds, ego_agent, cav)
@@ -141,22 +152,26 @@ class Frame:
                 ego_ids, cav_ids = hungarian_match(ego_preds, cav_preds)
             else:
                 ego_ids, cav_ids = fuse_method(ego_preds, cav_preds)
-
-            # Note: Assume ego_preds and cav_preds are 2D numpy arrays, and id is at column 0.
-            TP = int(np.sum(ego_preds[ego_ids][:, 0] == cav_preds[cav_ids][:, 0]))
-            FP = len(ego_ids) - TP
-            FN = ground_truth - TP
+            t1 = time.perf_counter_ns()
+            print(f"匹配时间: {(t1-t0)/1e6}ms")
+            TP, FP = 0, 0
+            for ego_id, cav_id in zip(ego_ids, cav_ids):
+                ego_pred = ego_preds[ego_id]
+                cav_pred = cav_preds[cav_id]
+                if ego_pred[0] == cav_pred[0]:
+                    TP += 1
+                else:
+                    FP += 1
 
             predict_results[f"cav{cav.aid}"] = {
-                "accuracy": TP / (TP + FP + FN) if TP + FP + FN > 0 else 0,
-                "precision": TP / (TP + FP) if TP + FP > 0 else 0,
-                "recall": TP / (TP + FN) if TP + FN > 0 else 0,
-                "correct_preds": TP,
-                "false_preds": FP,
-                "ground_truth": ground_truth,
+                "accuracy": TP / (TP + FP) if TP + FP > 0 else 0,
+                "ground_truth": len(ground_truth),
                 "ego_preds": len(ego_preds),
                 "cav_preds": len(cav_preds),
             }
+            end = time.perf_counter_ns()
+            print(f"评估时间: {(end-t1)/1e6}ms\n")
+        print(f"共匹配 {len(cav_agents)-filtered_cav} 个 cav")
         return predict_results
 
     def generate_data(self):
@@ -195,7 +210,7 @@ class Frame:
             if not ego_agent.within(cav):
                 continue
             ground_truth = get_ground_truth(ego_agent, cav, self.env)
-            if ground_truth == 0:
+            if len(ground_truth) == 0:
                 continue
             cav_preds = get_preds(cav)
             if cav_preds is None:
@@ -205,10 +220,14 @@ class Frame:
             if len(ego_preds) <= 1 or len(cav_preds) <= 1:
                 continue
             K, n1, n2 = build_affinity_matrix(cav_preds, ego_preds)
+            if n1 > 8 or n2 > 8:
+                continue
             gt = (
                 ego_preds[:, 0].reshape(-1, 1) == cav_preds[:, 0].reshape(1, -1)
             ).astype(np.int8)
             if gt.sum() == 0:
                 continue
-            results.append((ego_preds, cav_preds, K.numpy(), gt))
+            results.append(
+                (ego_preds[:, 1:], cav_preds[:, 1:], K.numpy(), gt, ground_truth)
+            )
         return results

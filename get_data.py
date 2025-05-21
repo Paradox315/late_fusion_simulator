@@ -17,7 +17,7 @@ from src.runner.runner import Simulator
 random.seed(2023)
 np.random.seed(2023)
 _ = torch.manual_seed(2023)
-dataset_path = "./data/match_dataset"
+dataset_path = "./data/detect_dataset"
 
 
 def init_env():
@@ -59,7 +59,7 @@ def init_simulator(env, agents, noise):
 
 
 def init_noise_setting():
-    noise_pos_values = [0.5, 1, 2, 3, 4, 5]
+    noise_pos_values = [0.25, 0.5, 1, 1.25, 1.5, 2]
     noise_shape_values = [0.05, 0.075, 0.1]
     noise_heading_values = list(map(math.radians, [1, 3, 5]))
 
